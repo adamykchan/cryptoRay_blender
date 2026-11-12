@@ -118,12 +118,8 @@ def detect_glass(mat):
 
 
 def is_glass(mat, settings):
-    mode = getattr(mat, "cryptoray_glass", "AUTO")
-    if mode == "GLASS":
-        return True
-    if mode == "SOLID":
-        return False
-    return settings.detect_glass and detect_glass(mat)
+    """Detected as glass and not marked Not Glass (the Glass Collection / matte_role work per object)."""
+    return settings.detect_glass and not getattr(mat, "cryptoray_not_glass", False) and detect_glass(mat)
 
 
 # --------------------------------------------------------------------------
@@ -686,6 +682,14 @@ def build(context, scene, settings):
     for obj, cam in info["glass"]:
         b.glass_object(obj, cam)
 
+    # Ignore Glass Reflections: nothing in the ID layer is visible to glossy (reflection) rays, so a
+    # reflection on glass adds no light; refracted (transmission) rays still see everything
+    world.cycles_visibility.glossy = not settings.ignore_reflections
+    if settings.ignore_reflections:
+        for o in list(coll.objects) + list(sources.all_objects):
+            if is_ours(o):
+                o.visible_glossy = False
+
     entries = [{"group": g, "object": k[0], "material": k[1]} for k, g in sorted(b.entries.items(), key=lambda x: x[1])]
     if not entries:
         clear(scene)
@@ -701,6 +705,7 @@ def build(context, scene, settings):
     man["settings"] = settings_signature(settings)
     man["sources"] = _sources(info)
     man["glass_materials"] = sorted(m.name_full for m, g in b.glass_cache.items() if g)
+    man["glass_check"] = _slot_glass(scene, settings)
     vl[MANIFEST_PROP] = json.dumps(man)
     warnings = list(info["warnings"]) + b.warnings
     groups = len(entries)
@@ -716,10 +721,18 @@ def _sources(info):
     return sorted({o.name_full for o, _ in info["targets"] + info["glass"] + info["others"]})
 
 
+def _slot_glass(scene, settings):
+    """Glass materials in the scene's object slots (cheap staleness check for Not Glass edits)."""
+    mats = {sl.material for o in scene.objects for sl in o.material_slots
+            if sl.material is not None and not is_ours(sl.material)}
+    return sorted(m.name_full for m in mats if is_glass(m, settings))
+
+
 def settings_signature(s):
     return [bool(s.use_object), bool(s.use_material), [n for _, n in requested_layers(s)], s.scope,
             s.target_collection.name_full if s.target_collection else "",
-            s.glass_collection.name_full if s.glass_collection else "", bool(s.detect_glass)]
+            s.glass_collection.name_full if s.glass_collection else "", bool(s.detect_glass),
+            bool(s.ignore_reflections)]
 
 
 def stale_reason(context, scene, settings):
@@ -735,6 +748,8 @@ def stale_reason(context, scene, settings):
         return str(e)
     if _sources(info) != man.get("sources"):
         return "objects changed"
+    if _slot_glass(scene, settings) != man.get("glass_check"):
+        return "glass materials changed"
     vl = id_layer(scene)
     leaks = [lc.name for lc in vl.layer_collection.children if not lc.exclude and lc.name != PROXY_COLLECTION]
     if leaks:

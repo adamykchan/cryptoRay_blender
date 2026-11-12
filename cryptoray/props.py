@@ -34,11 +34,15 @@ class CryptoRaySettings(bpy.types.PropertyGroup):
     detect_glass: BoolProperty(
         name="Detect Glass Materials", default=True,
         description="Materials that refract (Glass or Refraction BSDF, Principled with Transmission) keep "
-                    "their real shader in the ID layer. Override per material below")
+                    "their real shader in the ID layer. Untick Not Glass per material below")
     glass_collection: PointerProperty(
         name="Glass Collection", type=bpy.types.Collection,
         description="Optional: whole objects in here keep their real materials in the ID layer. Objects can "
                     "also be tagged with the custom property matte_role = \"glass\"")
+    ignore_reflections: BoolProperty(
+        name="Ignore Glass Reflections", default=True,
+        description="Reflections on glass carry no IDs, so objects seen through glass (clear or tinted) get "
+                    "a solid matte. Off: reflected objects also show up in the glass, as partial coverage")
     embed: BoolProperty(
         name="Embed in Beauty EXR", default=True,
         description="Write the Cryptomatte layers into the beauty EXR. Off: a separate "
@@ -54,29 +58,19 @@ class CryptoRaySettings(bpy.types.PropertyGroup):
                                description="Samples for the ID layer. 0 = same as the scene")
     keep_raw: BoolProperty(name="Keep Raw ID Passes", default=False,
                            description="Also save the raw light-group passes (+ manifest) next to the render")
-    auto_rebuild: BoolProperty(name="Rebuild Before Render", default=True,
-                               description="The render buttons rebuild the ID layer first, so new or changed "
-                                           "objects are always included")
-    delete_after: BoolProperty(name="Delete After Render", default=True,
-                               description="Remove the ID layer and its proxies when the render finishes, "
-                                           "leaving the scene exactly as before")
     group_warning: IntProperty(name="Warn Above", default=64, min=1,
                                description="Warn when more light groups than this are needed (GPU memory)")
-    show_glass: BoolProperty(name="Glass Materials", default=False)
 
 
 def register():
     bpy.utils.register_class(CryptoRaySettings)
     bpy.types.Scene.cryptoray = PointerProperty(type=CryptoRaySettings)
-    bpy.types.Material.cryptoray_glass = EnumProperty(
-        name="CryptoRay Glass",
-        items=[("AUTO", "Auto", "Glass if the shader refracts (when Detect Glass Materials is on)"),
-               ("GLASS", "Glass", "Always keep this material's real shader in the ID layer (no ID)"),
-               ("SOLID", "Not Glass", "Always give this material an ID")],
-        default="AUTO")
+    bpy.types.Material.cryptoray_not_glass = BoolProperty(
+        name="Not Glass", default=False,
+        description="Give this material an ID even though its shader refracts")
 
 
 def unregister():
-    del bpy.types.Material.cryptoray_glass
+    del bpy.types.Material.cryptoray_not_glass
     del bpy.types.Scene.cryptoray
     bpy.utils.unregister_class(CryptoRaySettings)

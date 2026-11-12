@@ -146,8 +146,8 @@ def main():
 
         h, w = total.shape
         cov_c = coverage(b1, lo, "Cube_C", s.ranks)
-        centre = cov_c[h // 2 - 20:h // 2 + 20, w // 2 - 20:w // 2 + 20]
-        check("Cube_C visible through glass (refracted)", float(centre.max()) > 0.5, round(float(centre.max()), 3))
+        # the ball fully covers Cube_C in every frame of the test shot, so all its coverage is refracted
+        check("Cube_C visible through glass (refracted)", float(cov_c.max()) > 0.5, round(float(cov_c.max()), 3))
 
         # direct views must match Blender's own Cryptomatte (positions, particles, label)
         agree = {}
@@ -200,6 +200,52 @@ def main():
             d, m = read(sep)
             check("separate file has preview RGBA + object layer only",
                   "A" in d and lo + "00.R" in d and lm + "00.R" not in d, sorted(d)[:8])
+
+        # ---- Ignore Glass Reflections: solid matte through clear and tinted glass ----
+        def ids_only(label):
+            do_build(sc, s)
+            for v, _ in uses:
+                v.use = False
+            sc.render.filepath = "//acceptance/%s_####" % label
+            render.begin(render.new_job(sc, ids_only=True, naming=render.output_naming(sc)))
+            render_still(sc, "//acceptance/%s_src" % label)
+            for v, u in uses:
+                v.use = u
+            return coverage(read(os.path.join(out, "%s_crypto_0001.exr" % label))[0], lo, "Cube_C", s.ranks)
+
+        glass_bsdf = bpy.data.materials["Glass"].node_tree.nodes["Principled BSDF"].inputs["Base Color"]
+        tint0 = tuple(glass_bsdf.default_value)
+        refl = {}
+        try:
+            for tint_name, tint in (("clear", (1, 1, 1, 1)), ("tinted", (0.3, 0.6, 0.35, 1))):
+                glass_bsdf.default_value = tint
+                for flag in (True, False):
+                    s.ignore_reflections = flag
+                    refl[(tint_name, flag)] = ids_only("refl_%s_%s" % (tint_name, "on" if flag else "off"))
+        finally:
+            glass_bsdf.default_value = tint0
+            s.ignore_reflections = True
+        # Cube_C as seen through the ball: pixels the clear/on matte gives > 0.5, minus edge pixels
+        mask = refl[("clear", True)] > 0.5
+        mask[1:-1, 1:-1] &= mask[:-2, 1:-1] & mask[2:, 1:-1] & mask[1:-1, :-2] & mask[1:-1, 2:]
+        means = {"%s, ignore %s" % (k[0], "on" if k[1] else "off"): round(float(v[mask].mean()), 4)
+                 for k, v in refl.items()}
+        means["pixels"] = int(mask.sum())
+        check("Ignore Glass Reflections: solid matte through clear and tinted glass (mean >= 0.99)",
+              mask.sum() > 100 and means["clear, ignore on"] >= 0.99 and means["tinted, ignore on"] >= 0.99
+              and means["tinted, ignore off"] < means["tinted, ignore on"], means)
+
+        # ---- Not Glass: the ball gets an ID ----
+        glass_mat = bpy.data.materials["Glass"]
+        glass_mat.cryptoray_not_glass = True
+        try:
+            res_ng = do_build(sc, s)
+            man_ng = build.manifest(sc)
+            check("Not Glass gives a detected glass material an ID",
+                  "GlassBall" in core.layer_names(man_ng, "object") and "Glass" not in res_ng["glass_materials"],
+                  res_ng["glass_materials"])
+        finally:
+            glass_mat.cryptoray_not_glass = False
 
         # ---- Clear restores the scene ----
         build.clear(sc)

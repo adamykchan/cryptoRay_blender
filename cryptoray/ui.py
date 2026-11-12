@@ -1,6 +1,6 @@
 import bpy
 
-from . import build, render
+from . import build, core, render
 
 _cache = {"key": None, "stale": None}
 _glass_cache = {"key": None, "list": []}
@@ -11,7 +11,8 @@ def _stale(context):
     s = context.scene.cryptoray
     vl = build.id_layer(context.scene)
     key = (context.scene.name, len(bpy.data.objects), len(bpy.data.collections),
-           repr(build.settings_signature(s)), vl.get(build.MANIFEST_PROP) if vl else None)
+           repr(build.settings_signature(s)), vl.get(build.MANIFEST_PROP) if vl else None,
+           tuple(m.name for m in bpy.data.materials if getattr(m, "cryptoray_not_glass", False)))
     if _cache["key"] != key:
         _cache["key"] = key
         try:
@@ -52,9 +53,42 @@ class CRYPTORAY_PT_main(bpy.types.Panel):
 
         if scene.render.engine != "CYCLES":
             lay.label(text="Needs Cycles (light groups)", icon="ERROR")
+        built = build.id_layer(scene) is not None
+
+        # ---- Proxy scene ----
+        box = lay.box()
+        box.label(text="Cryptomatte Proxy Scene and View Layer", icon="OUTLINER_COLLECTION")
+        row = box.row(align=True)
+        row.operator("cryptoray.build", text="Rebuild" if built else "Build", icon="FILE_REFRESH")
+        sub = row.row(align=True)
+        sub.enabled = built
+        sub.operator("cryptoray.clear", text="Delete", icon="TRASH")
+        if build.root_objects(scene):
+            box.label(text="Objects sit directly in the Scene Collection", icon="ERROR")
+            box.operator("cryptoray.move_root_objects", icon="OUTLINER_COLLECTION")
+        if built:
+            man = build.manifest(scene) or {}
+            ids = sum(len(core.layer_names(man, k)) for k, _ in man.get("layers", []))
+            groups = len(man.get("entries", []))
+            box.label(text="Built: %d IDs, %d light groups" % (ids, groups), icon="CHECKMARK")
+            box.label(text="Ctrl+F12 renders beauty + Cryptomatte")
+            reason = _stale(context)
+            if reason:
+                box.label(text="Out of date: " + reason, icon="ERROR")
+            if groups > s.group_warning:
+                box.label(text="Many light groups: watch GPU memory", icon="ERROR")
+            if not render.is_multilayer(scene):
+                box.label(text="Ctrl+F12 needs Multilayer EXR output", icon="INFO")
+            elif render.lossy_codec(scene):
+                box.label(text="Lossy EXR codec: use ZIP/PIZ for clean mattes", icon="ERROR")
+        else:
+            box.label(text="Not built. Build to enable the settings below.")
+
+        body = lay.column()
+        body.active = built          # dimmed until built; settings stay editable for the first build
 
         # ---- IDs ----
-        box = lay.box()
+        box = body.box()
         box.label(text="IDs", icon="OBJECT_DATA")
         for use, name in (("use_object", "object_layer"), ("use_material", "material_layer")):
             row = box.row(align=True)
@@ -66,86 +100,54 @@ class CRYPTORAY_PT_main(bpy.types.Panel):
         box.prop(s, "scope")
         if s.scope == "COLLECTION":
             box.prop(s, "target_collection")
-        if build.root_objects(scene):
-            box.label(text="Objects sit directly in the Scene Collection", icon="ERROR")
-            box.operator("cryptoray.move_root_objects", icon="OUTLINER_COLLECTION")
 
         # ---- Glass ----
-        box = lay.box()
+        box = body.box()
         box.label(text="Glass", icon="MATERIAL")
-        box.prop(s, "detect_glass")
-        box.prop(s, "glass_collection")
-        mats = _scene_materials(scene)
-        glass = [m for m in mats if build.is_glass(m, s)]
         row = box.row()
         row.use_property_split = False
-        row.prop(s, "show_glass", icon="TRIA_DOWN" if s.show_glass else "TRIA_RIGHT", emboss=False,
-                 text="Materials: %d glass of %d" % (len(glass), len(mats)))
-        if s.show_glass:
+        row.prop(s, "detect_glass")
+        if s.detect_glass:
+            mats = [m for m in _scene_materials(scene) if build.detect_glass(m)]
             col = box.column(align=True)
+            if not mats:
+                col.label(text="No glass materials found")
             for m in mats:
                 r = col.row(align=True)
                 r.use_property_split = False
-                r.label(text=m.name, icon="SHADING_RENDERED" if m in glass else "SHADING_SOLID")
-                r.prop(m, "cryptoray_glass", text="")
+                r.separator(factor=2.0)
+                r.label(text=m.name, icon="SHADING_RENDERED" if not m.cryptoray_not_glass else "SHADING_SOLID")
+                r.prop(m, "cryptoray_not_glass")
+        box.prop(s, "ignore_reflections")
+        box.prop(s, "glass_collection")
 
         # ---- Output ----
-        box = lay.box()
+        box = body.box()
         box.label(text="Output", icon="OUTPUT")
         box.prop(s, "embed")
-        try:
-            naming = render.output_naming(scene)
-            if s.embed:
-                box.label(text="Into the beauty EXR (IDs Only: separate file)")
-            else:
-                box.label(text=bpy.path.basename(render.side_file(naming, scene.frame_current)))
-        except RuntimeError as e:
-            box.label(text=str(e), icon="ERROR")
         box.prop(s, "ranks")
         box.prop(s, "normalization")
         box.prop(s, "matte_samples")
         box.prop(s, "keep_raw")
 
         # ---- Render ----
-        box = lay.box()
-        box.label(text="Render", icon="RENDER_STILL")
-        box.prop(s, "auto_rebuild")
-        box.prop(s, "delete_after")
-        if not render.is_multilayer(scene):
-            box.label(text="Beauty output isn't Multilayer EXR:", icon="INFO")
-            box.label(text="use 'IDs Only', or switch the format")
-        elif render.lossy_codec(scene):
-            box.label(text="Lossy EXR codec: use ZIP/PIZ for clean mattes", icon="ERROR")
-        col = box.column(align=True)
-        row = col.row(align=True)
-        op = row.operator("cryptoray.render", text="Still", icon="RENDER_STILL")
-        op.mode, op.sequence = "TOGETHER", False
-        op = row.operator("cryptoray.render", text="Animation", icon="RENDER_ANIMATION")
-        op.mode, op.sequence = "TOGETHER", True
-        row = col.row(align=True)
-        op = row.operator("cryptoray.render", text="IDs Only Still", icon="RENDER_STILL")
-        op.mode, op.sequence = "IDS_ONLY", False
-        op = row.operator("cryptoray.render", text="IDs Only Anim", icon="RENDER_ANIMATION")
-        op.mode, op.sequence = "IDS_ONLY", True
-
-        built = build.id_layer(scene) is not None
+        box = body.box()
+        box.label(text="Render Cryptomatte Only", icon="RENDER_STILL")
         row = box.row(align=True)
-        row.operator("cryptoray.build", text="Rebuild ID Layer" if built else "Build ID Layer", icon="FILE_REFRESH")
-        if built:
-            row.operator("cryptoray.clear", text="", icon="TRASH")
-            man = build.manifest(scene) or {}
-            groups = len(man.get("entries", []))
-            box.label(text="ID layer in scene: %d light groups" % groups, icon="CHECKMARK")
-            if not s.auto_rebuild:
-                reason = _stale(context)
-                if reason:
-                    box.label(text="Out of date: " + reason, icon="ERROR")
-            if groups > s.group_warning:
-                box.label(text="Many light groups: watch GPU memory", icon="ERROR")
+        row.enabled = built
+        op = row.operator("cryptoray.render", text="Render Still", icon="RENDER_STILL")
+        op.sequence = False
+        op = row.operator("cryptoray.render", text="Render Animation", icon="RENDER_ANIMATION")
+        op.sequence = True
+        try:
+            naming = render.output_naming(scene)
+            box.label(text="Writes " + bpy.path.basename(render.side_file(naming, scene.frame_current)))
+        except RuntimeError as e:
+            box.label(text=str(e), icon="ERROR")
         msg = render.STATUS.get(scene.name)
         if msg:
             for i in range(0, min(len(msg), 180), 60):
-                box.label(text=msg[i:i + 60])
+                lay.label(text=msg[i:i + 60])
 
 
 def register():

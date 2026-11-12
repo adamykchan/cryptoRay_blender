@@ -7,10 +7,11 @@ Creates scene "CryptoRay_Test":
   * Cube_L / Cube_C / Cube_R behind a glass sphere (IOR 1.45) - Cube_C moves up and down,
     Cube_R has two materials (red + blue) for the Material IDs
   * GlassBall in collection "Glass" (its material is detected as glass automatically)
-  * Bottle: one object with a glass body and a paper "Label" material (per-material glass)
+  * Bottle: one object with a green-tinted glass body and a paper "Label" material
   * Instancers: a collection instance, a Geometry Nodes scatter, a hair curves object, and a legacy
     hair particle system instancing cones
-  * Camera orbits the ball once over frames 1-96, so every element passes behind the glass
+  * Camera steps around the ball over 7 frames; in each, the ball fully covers one element
+  * Blender's own Cryptomatte passes are on in the Beauty layer, for comparison
   * Multilayer EXR output (32-bit ZIP) to //render/beauty_####.exr
 Set ROUGHNESS below to 0.3 for the rough-glass acceptance test, or N_EXTRA to add many cubes.
 """
@@ -21,7 +22,12 @@ import bpy
 
 ROUGHNESS = 0.0
 N_EXTRA = 0          # e.g. 47 -> 50 target objects for the stress test
-FRAMES = 96          # camera orbit length
+# Camera orbit angles (degrees), one frame each: every angle puts the glass ball fully in front of
+# one element (Cube_C stays behind it throughout). Measured on this scene.
+ORBIT = [(22.5, "Cube_L"), (60.0, "ConeInstance"), (138.75, "Hair"), (206.25, "Bottle"),
+         (228.75, "ParticleEmitter"), (303.75, "ConeScatter"), (337.5, "Cube_R")]
+FRAMES = len(ORBIT)
+SAMPLES = 256
 SCENE = "CryptoRay_Test"
 
 
@@ -36,12 +42,12 @@ def _fcurves(obj):
         return list(act.fcurves)
 
 
-def material(name, color=None, glass=False, rough=0.0):
+def material(name, color=None, glass=False, rough=0.0, tint=(1, 1, 1)):
     m = bpy.data.materials.get(name) or bpy.data.materials.new(name)
     m.use_nodes = True
     b = m.node_tree.nodes.get("Principled BSDF")
     if glass:
-        b.inputs["Base Color"].default_value = (1, 1, 1, 1)
+        b.inputs["Base Color"].default_value = (*tint, 1)
         b.inputs["Transmission Weight"].default_value = 1.0
         b.inputs["IOR"].default_value = 1.45
         b.inputs["Roughness"].default_value = rough
@@ -83,9 +89,9 @@ def main():
     sc.name = SCENE
     sc.render.engine = "CYCLES"
     sc.cycles.device = "GPU"
-    sc.cycles.samples = 64
+    sc.cycles.samples = SAMPLES
     sc.cycles.use_adaptive_sampling = False
-    sc.cycles.use_denoising = False
+    sc.cycles.use_denoising = True       # beauty only; the ID layer turns it off
     sc.render.resolution_x, sc.render.resolution_y = 640, 360
     sc.frame_start = 1
     sc.frame_end = FRAMES
@@ -98,6 +104,8 @@ def main():
     im.color_depth = "32"
     im.exr_codec = "ZIP"
     sc.view_layers[0].name = "Beauty"
+    sc.view_layers[0].use_pass_cryptomatte_object = True      # Blender's own, for comparison
+    sc.view_layers[0].use_pass_cryptomatte_material = True
 
     w = bpy.data.worlds.new("TestWorld")
     w.use_nodes = True
@@ -114,8 +122,8 @@ def main():
 
     mesh_object("Cube_L", cube, props, (-1.3, 3, 0), [red])
     cc = mesh_object("Cube_C", cube, props, (0, 3.5, -0.8), [green])
-    for k, f in enumerate(range(1, FRAMES + 2, 24)):      # up and down every 24 frames
-        cc.location.z = -0.8 if k % 2 == 0 else 0.8
+    for f, z in ((1, -0.8), (FRAMES, 0.8)):              # rises over the shot
+        cc.location.z = z
         cc.keyframe_insert("location", index=2, frame=f)
     cr = mesh_object("Cube_R", cube, props, (1.3, 3, 0), [red, blue])
     for i, p in enumerate(cr.data.polygons):
@@ -131,7 +139,7 @@ def main():
 
     # one object, two materials: glass body (detected automatically) + paper label (gets an ID)
     bottle = mesh_object("Bottle", lambda bm: bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=0.4),
-                         props, (1.1, -2.4, -1.0), [material("BottleGlass", glass=True), material("Label", (0.9, 0.85, 0.7))])
+                         props, (1.1, -2.4, -1.0), [material("BottleGlass", glass=True, tint=(0.35, 0.75, 0.4)), material("Label", (0.9, 0.85, 0.7))])
     bottle.scale.z = 1.5
     for p in bottle.data.polygons:
         p.use_smooth = True
@@ -157,7 +165,7 @@ def main():
     co.location, co.rotation_euler = (0, -6.5, 0.4), (math.radians(88), 0, 0)
     rig = bpy.data.objects.new("CamOrbit", None)         # camera orbits the ball once
     co.parent = rig
-    for f, angle in ((1, 0.0), (FRAMES + 1, 360.0)):
+    for f, (angle, _) in enumerate(ORBIT, start=1):
         rig.rotation_euler.z = math.radians(angle)
         rig.keyframe_insert("rotation_euler", index=2, frame=f)
     for fc in _fcurves(rig):
