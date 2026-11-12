@@ -97,14 +97,15 @@ When you're done, click **Delete**. It removes everything CryptoRay added. Rende
   matte.
 
 <table>
-<tr><th width="33%">Render</th><th width="33%">On (default)</th><th width="33%">Off</th></tr>
-<tr><td><img src="docs/images/cmp_refl_beauty.jpg" width="100%" alt="Beauty render, frame 2"></td>
-<td><img src="docs/images/cmp_refl_on.png" width="100%" alt="Ignore Glass Reflections on"></td>
-<td><img src="docs/images/cmp_refl_off.png" width="100%" alt="Ignore Glass Reflections off"></td></tr>
-<tr><td>The beauty: the floor and cubes reflect in the ball.</td>
-<td>Only what's behind the glass.</td>
-<td>Reflections carry IDs too: the floor (yellow) fills the top of the ball, and reflected objects mix into what's behind it.</td></tr>
+<tr><th>Render</th><th>On (default)</th><th>Off</th></tr>
+<tr><td><img src="docs/images/cmp_refl_beauty.jpg" width="250" alt="Beauty render, frame 2"></td>
+<td><img src="docs/images/cmp_refl_on.png" width="250" alt="Ignore Glass Reflections on"></td>
+<td><img src="docs/images/cmp_refl_off.png" width="250" alt="Ignore Glass Reflections off"></td></tr>
 </table>
+
+* **Render:** The beauty: the floor and cubes reflect in the ball.
+* **On (default):** Only what's behind the glass.
+* **Off:** Reflections carry IDs too: the floor (yellow) fills the top of the ball, and reflected objects mix into what's behind it.
 
 *Ignore Glass Reflections: frame 2 of the example scene, each colour one ID.*
 
@@ -112,14 +113,15 @@ When you're done, click **Delete**. It removes everything CryptoRay added. Rende
   off and the matte is only as strong as the light that actually gets through the glass.
 
 <table>
-<tr><th width="33%">Render</th><th width="33%">On (default)</th><th width="33%">Off</th></tr>
-<tr><td><img src="docs/images/cmp_abs_beauty.jpg" width="100%" alt="Beauty render, red cube half behind the tinted ball"></td>
-<td><img src="docs/images/cmp_abs_on.png" width="100%" alt="Ignore Glass Absorption on, red cube picked"></td>
-<td><img src="docs/images/cmp_abs_off.png" width="100%" alt="Ignore Glass Absorption off, red cube picked"></td></tr>
-<tr><td>The beauty: the red cube is half behind the blue-tinted ball.</td>
-<td>The cube has the same colour outside the glass and through it: full strength.</td>
-<td>Through the glass the cube is dimmer: only as strong as the light that gets through.</td></tr>
+<tr><th>Render</th><th>On (default)</th><th>Off</th></tr>
+<tr><td><img src="docs/images/cmp_abs_beauty.jpg" width="250" alt="Beauty render, red cube half behind the tinted ball"></td>
+<td><img src="docs/images/cmp_abs_on.png" width="250" alt="Ignore Glass Absorption on, red cube picked"></td>
+<td><img src="docs/images/cmp_abs_off.png" width="250" alt="Ignore Glass Absorption off, red cube picked"></td></tr>
 </table>
+
+* **Render:** The beauty: the red cube is half behind the blue-tinted ball.
+* **On (default):** The cube has the same colour outside the glass and through it: full strength.
+* **Off:** Through the glass the cube is dimmer: only as strong as the light that gets through.
 
 *Ignore Glass Absorption: frame 1 with the glass tinted blue, each colour one ID, the red cube picked in
 yellow.*
