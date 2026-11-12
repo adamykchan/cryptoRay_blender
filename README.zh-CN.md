@@ -85,10 +85,10 @@
 * **忽略玻璃反射**（默认开启）：玻璃上的反射不带 ID，所以玻璃后面的东西得到完整的遮罩。关闭后，被反射的物体也会出现在玻璃中，混进遮罩里。
 
 <table>
-<tr><th>渲染</th><th>开启（默认）</th><th>关闭</th></tr>
-<tr><td><img src="docs/images/cmp_refl_beauty.jpg" width="260" alt="Beauty 渲染，第 2 帧"></td>
-<td><img src="docs/images/cmp_refl_on.png" width="260" alt="忽略玻璃反射：开启"></td>
-<td><img src="docs/images/cmp_refl_off.png" width="260" alt="忽略玻璃反射：关闭"></td></tr>
+<tr><th width="33%">渲染</th><th width="33%">开启（默认）</th><th width="33%">关闭</th></tr>
+<tr><td><img src="docs/images/cmp_refl_beauty.jpg" width="100%" alt="Beauty 渲染，第 2 帧"></td>
+<td><img src="docs/images/cmp_refl_on.png" width="100%" alt="忽略玻璃反射：开启"></td>
+<td><img src="docs/images/cmp_refl_off.png" width="100%" alt="忽略玻璃反射：关闭"></td></tr>
 <tr><td>Beauty：地面和立方体倒映在球上。</td>
 <td>只有玻璃后面的东西。</td>
 <td>反射也带有 ID：地面（黄色）填满了球的上半部，被反射的物体混进玻璃后面的东西里。</td></tr>
@@ -99,10 +99,10 @@
 * **忽略玻璃吸收**（默认开启）：有色或吸光的玻璃不会削弱遮罩。关闭后，遮罩的强度只等于实际透过玻璃的光。
 
 <table>
-<tr><th>渲染</th><th>开启（默认）</th><th>关闭</th></tr>
-<tr><td><img src="docs/images/cmp_abs_beauty.jpg" width="260" alt="Beauty 渲染，红色立方体一半在有色球后面"></td>
-<td><img src="docs/images/cmp_abs_on.png" width="260" alt="忽略玻璃吸收：开启，已拾取红色立方体"></td>
-<td><img src="docs/images/cmp_abs_off.png" width="260" alt="忽略玻璃吸收：关闭，已拾取红色立方体"></td></tr>
+<tr><th width="33%">渲染</th><th width="33%">开启（默认）</th><th width="33%">关闭</th></tr>
+<tr><td><img src="docs/images/cmp_abs_beauty.jpg" width="100%" alt="Beauty 渲染，红色立方体一半在有色球后面"></td>
+<td><img src="docs/images/cmp_abs_on.png" width="100%" alt="忽略玻璃吸收：开启，已拾取红色立方体"></td>
+<td><img src="docs/images/cmp_abs_off.png" width="100%" alt="忽略玻璃吸收：关闭，已拾取红色立方体"></td></tr>
 <tr><td>Beauty：红色立方体一半在蓝色玻璃球后面。</td>
 <td>立方体在玻璃外和透过玻璃的颜色相同：完整强度。</td>
 <td>透过玻璃的立方体更暗：强度只等于透过来的光。</td></tr>
