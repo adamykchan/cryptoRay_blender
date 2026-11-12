@@ -165,7 +165,9 @@ top). Shader AOVs have the same limit, and an add-on can't change Cycles itself.
 its own view layer, where every object glows pure white and the glass keeps its real material. Each
 object is put in its own Cycles **light group**, and Cycles saves every light group as a separate image.
 That image is the object's matte, already refracted by the glass, blurred by rough glass and depth of
-field, and anti-aliased exactly like the beauty.
+field, and anti-aliased exactly like the beauty. After each frame, CryptoRay encodes these mattes as Cryptomatte
+layers and merges them back into the beauty render's EXR, so one file holds both (see *Writing the Cryptomatte*
+below).
 
 **Leaving your scene alone.** Changing your materials to white would change your beauty render. Instead,
 the `ID_MATTES` view layer hides all of your collections and shows its own copies: one proxy per object,
