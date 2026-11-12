@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+dist/
+# local tooling / third-party reference, not part of the project
+.mcp.json
+chatgpt_version/
