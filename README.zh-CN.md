@@ -44,9 +44,9 @@
 
 ### 2. 像平常一样渲染动画
 
-<img src="docs/images/ui_output_exr.png" width="400" alt="输出属性：Multi-Layer EXR，ZIP 编码">
+<img src="docs/images/ui_output_exr.zh-CN.png" width="400" alt="输出属性：多层 EXR，ZIP 编码器">
 
-输出格式必须是 **OpenEXR 多层**（Blender 5 中为 *Multi-Layer EXR*），编码为 **ZIP** 或 **PIZ**。
+输出格式必须是 **OpenEXR 多层**（Blender 5 中：**媒体类型**设为**多层 EXR**），**编码器**为 **ZIP** 或 **PIZ**。
 
 按 **Ctrl+F12**（*渲染 › 渲染动画*），或用命令行渲染。
 
@@ -68,31 +68,32 @@
 
 <img src="docs/images/ui_ids.zh-CN.png" width="300" alt="ID 部分">
 
-* **物体：**写出一个 Cryptomatte 层，每个物体一个 ID，命名方式与 Blender 自带的 CryptoObject 相同。
-* **材质：**写出一个层，每个材质一个 ID，命名方式与 Blender 自带的 CryptoMaterial 相同。
+* **物体**：写出一个 Cryptomatte 层，每个物体一个 ID，命名方式与 Blender 自带的 CryptoObject 相同。
+* **材质**：写出一个层，每个材质一个 ID，命名方式与 Blender 自带的 CryptoMaterial 相同。
 * 旁边的文本框是你在 Nuke 中看到的**层名称**。默认为 `CryptoRayObject` 和 `CryptoRayMaterial`。
 * **目标：**
-  * *所有可见物体：*除玻璃外，每个可见物体都获得 ID。
-  * *集合：*只有所选集合中的物体获得 ID。其他物体仍会遮挡后面的东西。大场景中可以用它减少灯光组数量。
+  * *所有可见物体*：除玻璃外，每个可见物体都获得 ID。
+  * *集合*：只有所选集合中的物体获得 ID。其他物体仍会遮挡后面的东西。大场景中可以用它减少灯光组数量。
 
 ### 玻璃
 
 <img src="docs/images/ui_glass.zh-CN.png" width="300" alt="玻璃部分">
 
-* **自动检测玻璃材质：**根据材质找出玻璃。任何会折射的材质（玻璃 BSDF、折射 BSDF，或带透射的原理化 BSDF）都会列在这里。玻璃保留真实的着色器，因此会弯曲遮罩，它自己不获得 ID。同时含有玻璃和其他材质的物体（例如贴了纸标签的瓶子）会被拆分：标签获得 ID，玻璃照样折射。
-* **非玻璃：**勾选后，该材质被当作普通表面而不是玻璃。它会在 Cryptomatte 中获得自己的 ID，遮罩也不再显示它后面的东西。
-* **玻璃集合：**可选。此集合中的整个物体都视为玻璃。
+* **自动检测玻璃材质**：根据材质找出玻璃。任何会折射的材质（玻璃 BSDF、折射 BSDF，或带透射的原理化 BSDF）都会列在这里。玻璃保留真实的着色器，因此会弯曲遮罩，它自己不获得 ID。同时含有玻璃和其他材质的物体（例如贴了纸标签的瓶子）会被拆分：标签获得 ID，玻璃照样折射。
+* **非玻璃**：勾选后，该材质被当作普通表面而不是玻璃。它会在 Cryptomatte 中获得自己的 ID，遮罩也不再显示它后面的东西。
+* **玻璃集合**：可选。此集合中的整个物体都视为玻璃。
 * **忽略玻璃反射**（默认开启）：玻璃上的反射不带 ID，所以玻璃后面的东西得到完整的遮罩。关闭后，被反射的物体也会出现在玻璃中，混进遮罩里。
 
 <table>
 <tr><th>渲染</th><th>开启（默认）</th><th>关闭</th></tr>
-<tr><td><img src="docs/images/cmp_refl_beauty.jpg" width="260" alt="Beauty 渲染，第 2 帧"></td>
-<td><img src="docs/images/cmp_refl_on.png" width="260" alt="忽略玻璃反射：开启"></td>
-<td><img src="docs/images/cmp_refl_off.png" width="260" alt="忽略玻璃反射：关闭"></td></tr>
-<tr><td>Beauty：地面和立方体倒映在球上。</td>
-<td>只有玻璃后面的东西。</td>
-<td>反射也带有 ID：地面（黄色）填满了球的上半部，被反射的物体混进玻璃后面的东西里。</td></tr>
+<tr><td><img src="docs/images/cmp_refl_beauty.jpg" width="250" alt="Beauty 渲染，第 2 帧"></td>
+<td><img src="docs/images/cmp_refl_on.png" width="250" alt="忽略玻璃反射：开启"></td>
+<td><img src="docs/images/cmp_refl_off.png" width="250" alt="忽略玻璃反射：关闭"></td></tr>
 </table>
+
+* **渲染**：Beauty：地面和立方体倒映在球上。
+* **开启（默认）**：只有玻璃后面的东西。
+* **关闭**：反射也带有 ID：地面（黄色）填满了球的上半部，被反射的物体混进玻璃后面的东西里。
 
 *忽略玻璃反射：示例场景第 2 帧，每种颜色代表一个 ID。*
 
@@ -100,13 +101,14 @@
 
 <table>
 <tr><th>渲染</th><th>开启（默认）</th><th>关闭</th></tr>
-<tr><td><img src="docs/images/cmp_abs_beauty.jpg" width="260" alt="Beauty 渲染，红色立方体一半在有色球后面"></td>
-<td><img src="docs/images/cmp_abs_on.png" width="260" alt="忽略玻璃吸收：开启，已拾取红色立方体"></td>
-<td><img src="docs/images/cmp_abs_off.png" width="260" alt="忽略玻璃吸收：关闭，已拾取红色立方体"></td></tr>
-<tr><td>Beauty：红色立方体一半在蓝色玻璃球后面。</td>
-<td>立方体在玻璃外和透过玻璃的颜色相同：完整强度。</td>
-<td>透过玻璃的立方体更暗：强度只等于透过来的光。</td></tr>
+<tr><td><img src="docs/images/cmp_abs_beauty.jpg" width="250" alt="Beauty 渲染，红色立方体一半在有色球后面"></td>
+<td><img src="docs/images/cmp_abs_on.png" width="250" alt="忽略玻璃吸收：开启，已拾取红色立方体"></td>
+<td><img src="docs/images/cmp_abs_off.png" width="250" alt="忽略玻璃吸收：关闭，已拾取红色立方体"></td></tr>
 </table>
+
+* **渲染**：Beauty：红色立方体一半在蓝色玻璃球后面。
+* **开启（默认）**：立方体在玻璃外和透过玻璃的颜色相同：完整强度。
+* **关闭**：透过玻璃的立方体更暗：强度只等于透过来的光。
 
 *忽略玻璃吸收：第 1 帧，玻璃染成蓝色，每种颜色代表一个 ID，红色立方体以黄色显示为已拾取。*
 
@@ -121,9 +123,9 @@
 <img src="docs/images/ui_output.zh-CN.png" width="300" alt="输出部分">
 
 * **嵌入 Beauty EXR**（默认开启）：Cryptomatte 层写入 Beauty EXR。关闭：写到旁边单独的 `<渲染名>_crypto_<帧>.exr`。
-* **级数：**每个像素存储的 ID 数量（Cryptomatte 深度）。通常为 6。
-* **遮罩采样：**仅用于遮罩渲染的采样数。0 表示使用场景的采样数。玻璃很暗导致遮罩有噪点时可以调高。
-* **保留原始 ID 通道：**另外保存原始灯光组通道和 JSON 清单。每个通道都可以直接当遮罩使用。
+* **级数**：每个像素存储的 ID 数量（Cryptomatte 深度）。通常为 6。
+* **遮罩采样**：仅用于遮罩渲染的采样数。0 表示使用场景的采样数。玻璃很暗导致遮罩有噪点时可以调高。
+* **保留原始 ID 通道**：另外保存原始灯光组通道和 JSON 清单。每个通道都可以直接当遮罩使用。
 
 ### 仅渲染 Cryptomatte
 
