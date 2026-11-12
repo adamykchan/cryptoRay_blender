@@ -153,4 +153,4 @@ Cryptomatte ID。在玻璃后面，第一次击中的就是玻璃，所以那里
 
 ## 许可证
 
-[GPL-3.0-or-later](LICENSE)，与 Blender 相同。
+Copyright © 2026 adamykchan。以 [GPL-3.0-or-later](LICENSE) 授权，与 Blender 相同。

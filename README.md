@@ -166,4 +166,4 @@ element is fully behind the ball). Blender's own Cryptomatte is on too, for comp
 
 ## License
 
-[GPL-3.0-or-later](LICENSE), like Blender.
+Copyright © 2026 adamykchan. Licensed under [GPL-3.0-or-later](LICENSE), like Blender.

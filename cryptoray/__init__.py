@@ -1,6 +1,6 @@
 bl_info = {
     "name": "CryptoRay",
-    "author": "CryptoRay contributors",
+    "author": "adamykchan",
     "version": (0, 5, 0),
     "blender": (4, 2, 0),
     "location": "3D View > Sidebar > CryptoRay",
