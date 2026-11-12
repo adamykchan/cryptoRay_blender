@@ -30,9 +30,9 @@
 
 ### 1. 建立
 
-點擊**建立**。
-
 <img src="docs/images/ui_build_before.zh-TW.png" width="300" alt="建立前的面板">
+
+點擊**建立**。
 
 <img src="docs/images/view_layers.png" width="400" alt="Beauty 旁邊的 ID_MATTES 視圖層">
 
@@ -114,7 +114,7 @@
 
 也可以逐一為物件加入自訂屬性 `matte_role`：`"glass"`（視為玻璃）、`"ignore"`（完全排除）或 `"other"`（遮擋後面的東西，但自己沒有 ID）。
 
-<img src="docs/images/ui_matte_role.png" width="374" alt="自訂屬性 matte_role 設為 glass">
+<img src="docs/images/ui_matte_role.zh-TW.png" width="374" alt="自訂屬性 matte_role 設為 glass">
 
 *物件屬性 › 自訂屬性：點擊「新增」，命名為 `matte_role`，類型設為字串，值為 `glass`、`ignore` 或 `other`。*
 
