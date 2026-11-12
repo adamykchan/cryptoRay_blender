@@ -18,152 +18,210 @@ Picking the red cube (`Cube_L`), shown in orange:
 | ![Cube matte with Blender's Cryptomatte: empty](docs/images/matte_builtin.png) | ![Cube matte with CryptoRay: the refracted cube](docs/images/matte_cryptoray.png) |
 | Empty: the cube is fully behind the glass. | The cube as seen through the ball. |
 
----
-
 ## Install
 
-1. Download `cryptoray-<version>.zip` from [Releases](https://github.com/adamykchan/cryptoRay_blender/releases)
-   (or zip the `cryptoray` folder of this repository yourself).
+1. Download `cryptoray-<version>.zip` from [Releases](https://github.com/adamykchan/cryptoRay_blender/releases).
 2. In Blender: **Edit › Preferences › Add-ons › ⌄ › Install from Disk…**, pick the zip, and tick **CryptoRay**.
 3. In the 3D Viewport press **N** and open the **CryptoRay** tab.
 
-Nothing else is needed: the EXR work uses the NumPy and OpenImageIO that ship with Blender, so it runs on
-Windows, macOS and Linux.
-
 ## Quick start
 
-Try it on the example scene first: open [`examples/cryptoray_test_scene.blend`](examples/cryptoray_test_scene.blend)
-and save it somewhere (the render path is relative to the .blend).
+<img src="docs/images/panel_en.png" width="300" alt="The CryptoRay panel">
 
-<img src="docs/images/panel_en.png" align="right" width="300" alt="CryptoRay panel">
+### 1. Build
 
-**1. Build.** In *Cryptomatte Proxy Scene and View Layer*, click **Build**. The panel shows how many IDs
-and light groups were made. The rest of the panel stays greyed out until you build. If you later add
-objects or change settings, the panel says *Out of date*: click **Rebuild**.
+Click **Build**.
 
-**2. Choose IDs.** Tick **Object** and/or **Material**. The text field next to each is the Cryptomatte
-layer name you will see in Nuke (`CryptoRayObject`, `CryptoRayMaterial`). Leave **Targets** on
-*All Visible*, or pick *Collection* to give IDs only to one collection.
+<table>
+<tr><th>Before</th><th>After</th></tr>
+<tr><td><img src="docs/images/ui_build_before.png" width="300" alt="Panel before building"></td>
+<td><img src="docs/images/ui_build_after.png" width="300" alt="Panel after building"></td></tr>
+</table>
 
-**3. Check the glass.** Glass is found automatically: any material that refracts (Glass BSDF,
-Refraction BSDF, or Principled BSDF with Transmission) is listed under **Detect Glass Materials**. Those
-materials stay real glass and get no ID. Tick **Not Glass** if one of them should get an ID anyway.
-Objects that mix glass and other materials (a bottle with a paper label) are split, so the label gets an
-ID and the glass still refracts.
+This adds a **proxy scene**: an extra view layer called `ID_MATTES` and a collection of proxy objects.
+CryptoRay needs it to render the mattes. Your own objects, materials and beauty render are not changed.
 
-**4. Set the output.** Render Properties › Output: **OpenEXR Multilayer**, codec **ZIP** or **PIZ**
-(lossy codecs damage the IDs).
+<img src="docs/images/view_layers.png" width="400" alt="The ID_MATTES view layer next to Beauty">
 
-**5. Render.** Press **Ctrl+F12** (or render from the command line, `blender -b file.blend -a`). After each
-frame the Cryptomatte layers are written into the beauty EXR. Your beauty image is the same as without
-CryptoRay.
+If you add objects or change settings later, the panel says *Out of date*: click **Rebuild**.
 
-<br clear="right">
+### 2. Render the animation as usual
 
-**Only need the mattes?** Under **Render Cryptomatte Only**, click **Render Still** or **Render Animation**.
-This renders just the ID layer and writes `<render name>_crypto_<frame>.exr` next to your render (the path
-for the current frame is shown above the buttons). The beauty is not rendered, and your render settings are
-put back afterwards.
+<img src="docs/images/ui_output_exr.png" width="400" alt="Output properties: Multi-Layer EXR, ZIP codec">
 
-> A plain **F12** shows the render but doesn't save it to disk, so no Cryptomatte file is written. Use
-> Ctrl+F12, the command line, or *Render Cryptomatte Only*.
+The output format must be **OpenEXR Multilayer** (*Multi-Layer EXR* in Blender 5) with the **ZIP** or
+**PIZ** codec.
 
-**Done with it?** **Delete** removes everything CryptoRay added. Rendered files are kept.
+Press **Ctrl+F12** (*Render › Render Animation*), or render from the command line.
 
-## In Nuke
+<img src="docs/images/nuke_layers.png" width="300" alt="CryptoRay layers in Nuke's layer list">
 
-1. Read the beauty EXR.
-2. Add a **Cryptomatte** node and set its layer to **CryptoRayObject** (or **CryptoRayMaterial**).
-3. Pick objects with the eyedropper, or type names into the matte list. Objects behind glass can be
-   picked through the glass.
+Each frame's EXR now contains the Cryptomatte layers `CryptoRayObject` (and `CryptoRayMaterial` if
+ticked). In Nuke, read the EXR, add a **Cryptomatte** node, choose the layer and pick objects, including
+the ones behind glass.
 
-No conversion step is needed: the EXR already holds standard Cryptomatte layers with a manifest.
-Blender's own Cryptomatte layers (if turned on) stay in the file next to CryptoRay's.
+**F12** (Render Image) only shows the render and doesn't save it, so it doesn't produce a Cryptomatte.
 
-## Options
+### 3. Delete
 
-| Option | Default | What it does |
-|---|---|---|
-| **Object / Material** | Object | Which Cryptomatte layers to write. Both come from the same render. |
-| **Targets** | All Visible | *Collection*: only objects in that collection get IDs. Other objects still hide what's behind them. |
-| **Detect Glass Materials** | on | Refracting materials stay glass. Off: only the Glass Collection and `matte_role` decide what is glass. |
-| **Not Glass** (per material) | off | Give a detected glass material an ID anyway. |
-| **Glass Collection** | — | Whole objects in this collection are treated as glass. |
-| **Ignore Glass Reflections** | on | Reflections on glass carry no IDs, so objects behind glass get a solid matte. Off: reflected objects show up in the glass as partial coverage. |
-| **Ignore Glass Absorption** | on | Mattes through tinted or absorbing glass stay at full strength. Off: the matte is as dark as the light that actually gets through. |
-| **Embed in Beauty EXR** | on | Off: write a separate `<render name>_crypto_<frame>.exr` (with a colour-coded preview in RGBA). |
-| **Levels** | 6 | IDs stored per pixel (Cryptomatte depth). |
-| **Matte Samples** | 0 | Samples for the ID layer only. 0 uses the scene's samples. Raise it for very dark glass. |
-| **Keep Raw ID Passes** | off | Also save the raw light-group passes and a JSON manifest. Each pass can be used directly as a matte. |
+<img src="docs/images/ui_delete.png" width="300" alt="The Delete button">
 
-Per-object control: the custom property `matte_role` on an object can be `"glass"` (treat as glass),
-`"ignore"` (leave out of the ID layer entirely) or `"other"` (blocks what's behind it but gets no ID).
+When you're done, click **Delete**. It removes everything CryptoRay added. Rendered files are kept.
+
+## Settings
+
+### IDs
+
+<img src="docs/images/ui_ids.png" width="300" alt="IDs section">
+
+* **Object:** write a Cryptomatte layer with one ID per object, named like Blender's own CryptoObject.
+* **Material:** write a layer with one ID per material, named like Blender's CryptoMaterial.
+* The text field next to each is the **layer name** you'll see in Nuke. Default `CryptoRayObject` and
+  `CryptoRayMaterial`.
+* **Targets:**
+  * *All Visible:* every visible object gets an ID (except glass).
+  * *Collection:* only objects in the chosen collection get IDs. Other objects still hide what's behind
+    them. Use this to cut down the number of light groups in big scenes.
+
+### Glass
+
+<img src="docs/images/ui_glass.png" width="300" alt="Glass section">
+
+* **Detect Glass Materials:** finds glass by its material. Any material that refracts (Glass BSDF,
+  Refraction BSDF, or Principled BSDF with Transmission) is listed here. Glass keeps its real shader so it
+  bends the mattes, and gets no ID itself. An object with both glass and other materials (a bottle with a
+  paper label) is split: the label gets an ID, the glass refracts.
+* **Not Glass:** tick it to treat that material as a normal surface instead of glass. It gets its own ID in
+  the Cryptomatte, and the mattes no longer show what's behind it.
+* **Glass Collection:** optional. Whole objects in this collection are treated as glass.
+* **Ignore Glass Reflections** (on by default): reflections on glass don't carry IDs, so whatever is behind
+  the glass gets a solid matte. Turn it off and reflected objects show up in the glass too, mixed into the
+  matte.
+
+<table>
+<tr><th>Render</th><th>On (default)</th><th>Off</th></tr>
+<tr><td><img src="docs/images/cmp_refl_beauty.jpg" width="260" alt="Beauty render, frame 2"></td>
+<td><img src="docs/images/cmp_refl_on.png" width="260" alt="Ignore Glass Reflections on"></td>
+<td><img src="docs/images/cmp_refl_off.png" width="260" alt="Ignore Glass Reflections off"></td></tr>
+<tr><td>The beauty: the floor and cubes reflect in the ball.</td>
+<td>Only what's behind the glass.</td>
+<td>Reflections carry IDs too: the floor (yellow) fills the top of the ball, and reflected objects mix into what's behind it.</td></tr>
+</table>
+
+*Ignore Glass Reflections: frame 2 of the example scene, each colour one ID.*
+
+* **Ignore Glass Absorption** (on by default): tinted or absorbing glass doesn't weaken the matte. Turn it
+  off and the matte is only as strong as the light that actually gets through the glass.
+
+<table>
+<tr><th>Render</th><th>On (default)</th><th>Off</th></tr>
+<tr><td><img src="docs/images/cmp_abs_beauty.jpg" width="260" alt="Beauty render, red cube half behind the tinted ball"></td>
+<td><img src="docs/images/cmp_abs_on.png" width="260" alt="Ignore Glass Absorption on, red cube picked"></td>
+<td><img src="docs/images/cmp_abs_off.png" width="260" alt="Ignore Glass Absorption off, red cube picked"></td></tr>
+<tr><td>The beauty: the red cube is half behind the blue-tinted ball.</td>
+<td>The cube has the same colour outside the glass and through it: full strength.</td>
+<td>Through the glass the cube is dimmer: only as strong as the light that gets through.</td></tr>
+</table>
+
+*Ignore Glass Absorption: frame 1 with the glass tinted blue, each colour one ID, the red cube picked in
+yellow.*
+
+Per object, you can also add the custom property `matte_role`: `"glass"` (treat as glass), `"ignore"`
+(leave it out completely) or `"other"` (hides what's behind it but gets no ID).
+
+<img src="docs/images/ui_matte_role.png" width="374" alt="Custom property matte_role set to glass">
+
+*Object Properties › Custom Properties: click New, name it `matte_role`, set its type to String and its
+value to `glass`, `ignore` or `other`.*
+
+### Output
+
+<img src="docs/images/ui_output.png" width="300" alt="Output section">
+
+* **Embed in Beauty EXR** (on by default): the Cryptomatte layers go into the beauty EXR. Off: they go to a
+  separate `<render name>_crypto_<frame>.exr` next to it.
+* **Levels:** how many IDs are stored per pixel (Cryptomatte depth). 6 is the usual value.
+* **Matte Samples:** samples for the matte render only. 0 uses the scene's samples. Raise it if mattes
+  behind very dark glass are noisy.
+* **Keep Raw ID Passes:** also save the raw light-group passes and a JSON manifest. Each pass can be used
+  directly as a matte.
+
+### Render Cryptomatte Only
+
+<img src="docs/images/ui_render_only.png" width="300" alt="Render Cryptomatte Only section">
+
+Renders only the mattes, without the beauty, and writes `<render name>_crypto_<frame>.exr` to the path
+shown. Use it when only the mattes need re-rendering, or when your beauty output isn't a Multilayer EXR.
+**Render Still** does the current frame, **Render Animation** the frame range. It asks whether to rebuild
+the proxy scene first (yes by default). Your render settings are put back afterwards.
 
 ## How it works
 
-![How CryptoRay works](docs/images/how_it_works.svg)
+**The problem.** Cycles writes Cryptomatte IDs only where a camera ray first hits a surface. Behind
+glass, that surface is the glass, so every pixel there gets the glass's ID (see the comparison at the
+top). Shader AOVs have the same limit, and an add-on can't change Cycles itself.
 
-**Why Blender's Cryptomatte can't do this.** Cycles writes Cryptomatte IDs only where the camera ray
-first hits a surface. Behind glass, that surface is the glass, so every pixel there gets the glass's ID.
-Shader AOVs have the same limit, and an add-on can't change the Cycles kernel.
+**IDs as light.** IDs can't travel through glass, but light can. So CryptoRay renders a second time, in
+its own view layer, where every object glows pure white and the glass keeps its real material. Each
+object is put in its own Cycles **light group**, and Cycles saves every light group as a separate image.
+That image is the object's matte, already refracted by the glass, blurred by rough glass and depth of
+field, and anti-aliased exactly like the beauty.
 
-**Carrying IDs as light.** Light, unlike IDs, does travel through glass. CryptoRay adds a second view
-layer, `ID_MATTES`, where every target object glows pure white and sits in its own Cycles **light group**,
-while the glass keeps its real shader. Light groups split the render into one pass per group, so each
-pass is exactly one object's matte, already bent by the glass, blurred by rough glass and defocus, and
-anti-aliased like the beauty.
+**Leaving your scene alone.** Changing your materials to white would change your beauty render. Instead,
+the `ID_MATTES` view layer hides all of your collections and shows its own copies: one proxy per object,
+made with a Geometry Nodes *Object Info* node, so it follows the original's animation, deformation and
+modifiers automatically. Proxies get a white glowing material; glass proxies keep the original glass.
+That is the proxy scene that **Build** adds and **Delete** removes. The beauty render is identical with
+or without it (checked pixel by pixel), and both layers render in the same Ctrl+F12.
 
-**Not touching your scene.** The ID layer doesn't change your materials. It excludes all your collections
-and uses its own collection of *proxies*: one per object, built with a Geometry Nodes *Object Info* node
-that reads the original live, so animation, deformation and modifiers follow automatically. The proxy
-gets a white emission material; glass proxies keep the original glass. Particle systems get a matching
-copy with the same seed. Everything added is tagged, so **Delete** removes exactly that. The beauty
-render is identical with or without CryptoRay (checked pixel by pixel).
+**Particles are handled differently.** Object Info can't read legacy particle systems, so for each one
+CryptoRay adds a copy of the emitter with the same seed and settings, which gives exactly the same
+particles. Instead of the original objects, the copy's particles instance white-glowing duplicates of
+them, so each particle gets the ID of the object it instances (as in Blender's own Cryptomatte). Hair
+rendered as strands gets the white material on the copy, and its ID comes from the emitter's strand
+material. Emitter particles are re-simulated in the copy, so bake them if the mattes drift.
 
-**Turning light into coverage.** After each frame, CryptoRay reads the light-group passes and, for each
-pixel, divides each pass by the sum of all of them. The world is an ID too (`Background`), so the
-coverages always add up to 1, and glass tint or absorption cancels out. Reflection rays don't see the ID
-layer, so reflections on the glass don't leak other IDs into the matte. Where the camera sees almost only
-reflection (for example total internal reflection at the edge of a bottle) there is nothing behind the
-glass to show, and the matte fades out with soft edges.
+**From light to coverage.** After each frame, CryptoRay reads the light groups and, for every pixel,
+divides each one by the total of all of them. That gives each object's share of the pixel. The world is
+an ID too (`Background`), so the shares always add up to 1. Dividing by the total also cancels out glass
+tint and absorption (**Ignore Glass Absorption**). Reflection rays don't see the glowing proxies
+(**Ignore Glass Reflections**), so reflections can't leak other IDs in. Where the camera sees almost only
+reflection, such as total internal reflection at a bottle's edge, there's nothing behind the glass to
+show, and the matte fades out softly.
 
-**Writing Cryptomatte.** The strongest IDs per pixel (6 by default) are hashed with MurmurHash3 as the
-[Cryptomatte specification](https://github.com/Psyop/Cryptomatte) requires and written as standard
-`CryptoRayObject00…` layers with a manifest, into the beauty EXR. Each ID keeps a real coverage value, not
-a packed code, so soft edges stay correct.
+**Writing the Cryptomatte.** For every pixel, the strongest IDs (6 by default) are stored with their
+coverage, the names are hashed as the [Cryptomatte specification](https://github.com/Psyop/Cryptomatte)
+requires, and the result is written into the EXR as standard Cryptomatte layers with a manifest. Then the
+raw light groups are removed from the file.
 
-**Object and material IDs together.** Each object/material pair gets one light group. An object's matte is
-the sum of its pairs; a material's matte is the sum of its pairs across objects. So both layers come from
-one render.
-
-## Chinese interface
-
-The panel, tooltips and messages are translated into Simplified and Traditional Chinese. In
-**Edit › Preferences › Interface › Translation**, choose *简体中文* or *繁體中文* and tick **Interface** and
-**Tooltips**.
+**Objects and materials together.** Each object/material pair gets one light group. An object's matte is
+the sum of its pairs, and a material's matte is the sum of its pairs across all objects, so both layers
+come from one render.
 
 ## Limitations
 
-* **Volumes** are not supported and are left out of the ID layer.
-* **Particles** are named after the instanced object, as in Blender's own Cryptomatte. Hair particles
-  are tested; simulated emitter particles are re-simulated in the copy, so bake them if the mattes drift.
+* **Volumes** are not supported and are left out of the mattes.
+* **Particles** are named after the instanced object, as in Blender's own Cryptomatte. Hair particles are
+  tested; emitter particles are re-simulated in the proxy, so bake them if the mattes drift.
 * Collection instances and Geometry Nodes instances get the **instancer's** name (Blender's own
   Cryptomatte names each instanced object).
-* Each light group is a full-resolution float buffer. Above 64 groups the panel warns; use the
+* Each light group is a full-resolution image in GPU memory. Above 64 the panel warns; use the
   *Collection* target to reduce them.
-* Objects linked directly to the *Scene Collection* can't be hidden from a view layer. The panel offers
-  **Move Root Objects**, which puts them into a collection (the render is unchanged).
-* Blender's own Cryptomatte manifest lists the wrong hash for about 1 in 128 names (its pixels are
-  right). CryptoRay follows the specification, so picking works for every name.
+* Objects placed directly in the *Scene Collection* (not inside any collection) can't be hidden from the
+  ID layer, so Build stops and offers **Move Root Objects**, which puts them in a new collection. Your
+  render doesn't change.
+* Blender's own Cryptomatte manifest lists the wrong hash for about 1 in 128 names (its pixels are right).
+  CryptoRay follows the specification, so picking works for every name.
 
 ## Example scene
 
 [`examples/cryptoray_test_scene.blend`](examples/cryptoray_test_scene.blend) has cubes behind a glass
 ball, a tinted bottle with a label, and instancing and particle cases, over 7 frames (in each frame one
-element is fully behind the ball). Blender's own Cryptomatte is on too, for comparison.
+element is fully behind the ball). Blender's own Cryptomatte is on too, for comparison. Save it somewhere
+before rendering (the output path is relative to the .blend).
 [`examples/make_test_scene.py`](examples/make_test_scene.py) builds the same scene from scratch:
 `blender --python examples/make_test_scene.py`.
 
 ## License
 
-Copyright © 2026 adamykchan. Licensed under [GPL-3.0-or-later](LICENSE), like Blender.
+Copyright © 2026 adamykchan. Licensed under [GPL-3.0-or-later](LICENSE).
