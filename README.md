@@ -30,9 +30,9 @@ Picking the red cube (`Cube_L`), shown in orange:
 
 ### 1. Build
 
-Click **Build**.
-
 <img src="docs/images/ui_build_before.png" width="300" alt="Panel before building">
+
+Click **Build**.
 
 <img src="docs/images/view_layers.png" width="400" alt="The ID_MATTES view layer next to Beauty">
 
