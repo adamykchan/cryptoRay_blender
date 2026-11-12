@@ -1,11 +1,14 @@
-"""Render handlers: after each written frame, turn the ID_MATTES light-group passes into a
-Cryptomatte EXR (and optionally strip them from the beauty file / keep them as a raw file).
+"""Render handlers: after each written frame, turn the ID_MATTES light-group passes into Cryptomatte
+layers, embedded in the beauty EXR or written next to it as <render name>_crypto_<frame>.exr. The ID
+passes are always removed from the beauty file.
 
 Handlers only ever read scene data. Anything that changes the scene (restoring settings after an
-"IDs only" render) happens in a main-thread timer, never in the render thread."""
+"IDs only" render, deleting the ID layer afterwards) happens in a main-thread timer, never in the
+render thread."""
 
 import json
 import os
+import re
 import time
 import traceback
 
@@ -52,17 +55,32 @@ def lossy_codec(scene):
     return is_multilayer(scene) and scene.render.image_settings.exr_codec in core.LOSSY_EXR_CODECS
 
 
-def layer_name(settings):
-    if settings.layer_name.strip():
-        return settings.layer_name.strip()
-    return "CryptoRayMaterial" if settings.mode == "MATERIAL" else "CryptoRayObject"
+def output_naming(scene):
+    """(folder, stem, frame padding) from the render output path: //render/shot_#### ->
+    (<abs>/render, "shot", 4). Cryptomatte files are named <stem>_crypto_<frame>.exr."""
+    path = bpy.path.abspath(scene.render.filepath)
+    if path.startswith("//"):
+        raise RuntimeError("Save the .blend file first (the render output path is relative).")
+    folder, base = os.path.split(path)
+    if base.lower().endswith(".exr"):
+        base = base[:-4]
+    runs = re.findall(r"#+", base)
+    pad = len(runs[-1]) if runs else 4
+    if runs:
+        i = base.rfind(runs[-1])
+        base = base[:i] + base[i + len(runs[-1]):]
+    return folder, base.strip(" _.-"), pad
 
 
-def resolve_dir(path):
-    p = bpy.path.abspath(path)
-    if p.startswith("//"):
-        raise RuntimeError("Save the .blend file or use an absolute CryptoRay output folder.")
-    return p
+def side_file(naming, frame, kind="crypto"):
+    folder, stem, pad = naming
+    name = "%s_%0*d.exr" % (kind, pad, frame)
+    return os.path.join(folder, "%s_%s" % (stem, name) if stem else name)
+
+
+def manifest_file(naming):
+    folder, stem, _ = naming
+    return os.path.join(folder, "%s_crypto_manifest.json" % stem if stem else "crypto_manifest.json")
 
 
 def written_file(scene, since):
@@ -82,19 +100,16 @@ def _set_status(scene_name, text):
     print("[CryptoRay] %s: %s" % (scene_name, text))
 
 
-def new_job(scene, ids_only=False, out_dir=None, restore=None):
+def new_job(scene, ids_only=False, naming=None, restore=None):
     s = scene.cryptoray
     man = build.manifest(scene)
     if man is None:
         return None
-    if out_dir is None:
-        out_dir = os.path.dirname(bpy.path.abspath(scene.render.frame_path(frame=scene.frame_current)))
     return {
         "scene": scene.name, "ids_only": ids_only, "manifest": man, "t0": time.time(),
-        "out_dir": resolve_dir(s.output_dir) if s.output_dir.strip() else out_dir,
-        "prefix": (s.prefix.strip() or "crypto"), "ranks": s.ranks, "layer": layer_name(s),
-        "normalization": s.normalization, "keep_raw": s.keep_raw, "strip": s.strip_beauty,
-        "frames": [], "errors": [], "restore": restore, "manifest_written": False,
+        "naming": naming or output_naming(scene), "ranks": s.ranks, "normalization": s.normalization,
+        "embed": s.embed and not ids_only, "keep_raw": s.keep_raw,
+        "frames": [], "errors": [], "last": None, "restore": restore, "manifest_written": False,
     }
 
 
@@ -136,19 +151,20 @@ def on_render_write(scene, *_):
         src = written_file(scene, job["t0"])
         if src is None:
             raise RuntimeError("could not find the written frame file")
-        name = "%s_%04d.exr" % (job["prefix"], frame)
-        crypto = os.path.join(job["out_dir"], name)
-        raw = os.path.join(job["out_dir"], "%s_raw_%04d.exr" % (job["prefix"], frame)) if job["keep_raw"] else None
-        res = core.convert(src, job["manifest"], crypto, ranks=job["ranks"], layer_name=job["layer"],
-                           normalization=job["normalization"], raw_path=raw,
-                           strip_source=job["strip"] and not job["ids_only"],
-                           delete_source=job["ids_only"])
+        naming = job["naming"]
+        crypto = None if job["embed"] else side_file(naming, frame)
+        raw = side_file(naming, frame, "crypto_raw") if job["keep_raw"] else None
+        res = core.convert(src, job["manifest"], ranks=job["ranks"], normalization=job["normalization"],
+                           crypto_path=crypto, embed=job["embed"], raw_path=raw, delete_source=job["ids_only"])
         if raw and not job["manifest_written"]:
-            with open(os.path.join(job["out_dir"], "%s_manifest.json" % job["prefix"]), "w", encoding="utf-8") as f:
+            with open(manifest_file(naming), "w", encoding="utf-8") as f:
                 json.dump(job["manifest"], f, indent=2)
             job["manifest_written"] = True
         job["frames"].append(frame)
-        _set_status(scene.name, "Frame %d -> %s (%d IDs, %.2fs)" % (frame, name, res["ids"], res["seconds"]))
+        job["last"] = res["crypto"]
+        _set_status(scene.name, "Frame %d -> %s%s (%d IDs, %.2fs)" % (
+            frame, os.path.basename(res["crypto"]), " (embedded)" if res["embedded"] else "",
+            res["ids"], res["seconds"]))
     except Exception as e:
         traceback.print_exc()
         job["errors"].append("frame %d: %s" % (frame, e))
@@ -167,15 +183,16 @@ def _finish(scene, cancelled):
     elif cancelled:
         msg = "Render cancelled; %d Cryptomatte frame(s) written." % n
     elif n == 0:
-        msg = "Nothing written: a plain F12 still isn't saved. Use CryptoRay 'Render Still'."
+        msg = "Nothing written: a plain F12 isn't saved. Use the CryptoRay Still button."
+    elif job["embed"]:
+        msg = "Done: Cryptomatte embedded in %d beauty frame(s) in %s" % (n, job["naming"][0])
     else:
-        msg = "Done: %d Cryptomatte frame(s) in %s" % (n, job["out_dir"])
+        msg = "Done: %d Cryptomatte frame(s) in %s" % (n, job["naming"][0])
     _set_status(scene.name, msg)
     if job["restore"] is not None:
         _PENDING_RESTORE.append(job["restore"])
-        if bpy.app.background:
-            _run_restore()
-        elif not bpy.app.timers.is_registered(_run_restore):
+        # background: the operator runs it once the (blocking) render call returns
+        if not bpy.app.background and not bpy.app.timers.is_registered(_run_restore):
             bpy.app.timers.register(_run_restore, first_interval=0.1)
     if not bpy.app.background and not bpy.app.timers.is_registered(_redraw):
         bpy.app.timers.register(_redraw, first_interval=0.1)
@@ -196,9 +213,22 @@ def _run_restore():
 def _redraw():
     for w in bpy.context.window_manager.windows:
         for a in w.screen.areas:
-            if a.type in ("VIEW_3D", "PROPERTIES"):
+            if a.type in ("VIEW_3D", "PROPERTIES", "OUTLINER"):
                 a.tag_redraw()
     return None
+
+
+def leave_id_layer(scene):
+    """Point every window that shows the scene's ID layer back at a beauty layer."""
+    wm = bpy.context.window_manager
+    for w in (wm.windows if wm else []):
+        if w.scene == scene and build.is_ours(w.view_layer):
+            w.view_layer = build.beauty_layers(scene)[0]
+
+
+def clear_scene(scene):
+    leave_id_layer(scene)
+    return build.clear(scene)
 
 
 @persistent

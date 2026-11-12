@@ -1,10 +1,9 @@
-"""CryptoRay acceptance checks (SPEC "Acceptance tests"), run inside Blender on the open scene
-made by make_test_scene.py:
+"""CryptoRay acceptance checks, run inside Blender on the scene made by make_test_scene.py:
 
     blender cryptoray_test.blend --background --python tests/blender/acceptance.py
 
-Renders frame 1 three ways (before build, built, after clear) into //acceptance/ and prints a
-JSON report. The scene is left as it was (ID layer cleared). Needs the CryptoRay add-on enabled.
+Renders frame 1 several ways into //acceptance/ and prints a JSON report. The scene is left as it
+was (ID layer cleared, settings restored). Needs the CryptoRay add-on enabled.
 """
 import json
 import os
@@ -32,8 +31,9 @@ def read(path):
         px = np.asarray(inp.read_image(si, 0, 0, sp.nchannels, "float")).reshape(sp.height, sp.width, sp.nchannels)
         for i, n in enumerate(sp.channelnames):
             d[n] = px[..., i]
-        for a in sp.extra_attribs:
-            meta[a.name] = a.value
+        if si == 0:
+            for a in sp.extra_attribs:
+                meta[a.name] = a.value
         si += 1
     inp.close()
     return d, meta
@@ -50,9 +50,30 @@ def render_still(scene, path):
     return bpy.path.abspath(path) + ".exr"
 
 
+def do_build(sc, s):
+    win = bpy.context.window_manager.windows[0] if bpy.context.window_manager.windows else None
+    if win:
+        with bpy.context.temp_override(window=win, scene=sc, view_layer=build.beauty_layers(sc)[0]):
+            return build.build(bpy.context, sc, s)
+    return build.build(bpy.context, sc, s)
+
+
 def inventory():
     return {k: len(getattr(bpy.data, k)) for k in ("objects", "meshes", "materials", "node_groups", "worlds",
-                                                    "collections", "hair_curves")}
+                                                    "collections", "hair_curves", "particles")}
+
+
+def coverage(d, layer, name, ranks, lower=False):
+    """Coverage of ``name`` in a Cryptomatte layer (ours: .R/.G/.B/.A, Blender's: .r/.g/.b/.a)."""
+    idf = np.float32(core.id_to_float(core.name_to_id(name)))
+    ch = "rgba" if lower else "RGBA"
+    cov = 0
+    for k in range(ranks):
+        pre = "%s%02d." % (layer, k // 2)
+        i, w = (ch[0], ch[1]) if k % 2 == 0 else (ch[2], ch[3])
+        if pre + i in d:
+            cov = cov + np.where(d[pre + i] == idf, d[pre + w], 0)
+    return cov
 
 
 def main():
@@ -62,8 +83,9 @@ def main():
     os.makedirs(out, exist_ok=True)
     beauty = build.beauty_layers(sc)[0]
     orig_path = sc.render.filepath
+    saved = {k: getattr(s, k) for k in ("use_object", "use_material", "embed", "keep_raw")}
     native = (beauty.use_pass_cryptomatte_object, beauty.use_pass_cryptomatte_material)
-    beauty.use_pass_cryptomatte_object = True       # Blender's own Cryptomatte, for the hash check
+    beauty.use_pass_cryptomatte_object = True       # Blender's own Cryptomatte, for comparison
     beauty.use_pass_cryptomatte_material = True
     sc.frame_set(1)
     try:
@@ -71,95 +93,113 @@ def main():
         inv0 = inventory()
         before = render_still(sc, "//acceptance/before")
 
-        # ---- Object mode, render together, keep raw ----
-        s.mode, s.packing, s.keep_raw, s.strip_beauty, s.output_dir, s.prefix = "OBJECT", "SINGLE", True, True, out, "obj"
+        # ---- Object + Material, embedded in the beauty, keep raw ----
+        s.use_object, s.use_material, s.embed, s.keep_raw = True, True, True, True
         t = time.time()
-        res = build.build(bpy.context, sc, s)
-        R["build"] = {k: res[k] for k in ("ids", "groups", "glass", "others")}
-        R["build"]["warnings"] = res["warnings"]
-        R["build"]["seconds"] = round(time.time() - t, 3)
-        render.begin(render.new_job(sc, out_dir=out))
+        res = do_build(sc, s)
+        R["build"] = dict(res, seconds=round(time.time() - t, 3))
+        sc.render.filepath = "//acceptance/together"
+        render.begin(render.new_job(sc))
         t = time.time()
         together = render_still(sc, "//acceptance/together")
         R["render_together_seconds"] = round(time.time() - t, 2)
         R["status"] = render.STATUS.get(sc.name)
 
         b0, _ = read(before)
-        b1, _ = read(together)
+        b1, meta = read(together)
         ids_left = [k for k in b1 if k.startswith(core.ID_LAYER + ".")]
         check("beauty file stripped of ID passes", not ids_left, ids_left[:3])
         diff = max(float(np.abs(b0[k] - b1[k]).max()) for k in b0 if k.startswith("Beauty.Combined"))
         check("beauty unchanged by ID layer", diff < 1e-4, diff)
 
-        crypto, cmeta = read(os.path.join(out, "obj_0001.exr"))
-        raw, rmeta = read(os.path.join(out, "obj_raw_0001.exr"))
+        lo, lm = "CryptoRayObject", "CryptoRayMaterial"
+        ko, km = ("cryptomatte/%s/" % core.layer_key(n)[:7] for n in (lo, lm))
+        check("embedded: both layers + metadata in the beauty EXR",
+              lo + "00.R" in b1 and lm + "00.R" in b1 and meta.get(ko + "name") == lo and meta.get(km + "name") == lm,
+              sorted(k for k in meta if k.startswith("cryptomatte"))[:12])
+        objs = json.loads(meta[ko + "manifest"])
+        mats = json.loads(meta[km + "manifest"])
+        R["object_ids"], R["material_ids"] = sorted(objs), sorted(mats)
+        check("glass detected by material (ball, bottle body) - no IDs",
+              "GlassBall" not in objs and "Glass" not in mats and "BottleGlass" not in mats,
+              res["glass_materials"])
+        check("bottle label gets IDs", "Bottle" in objs and "Label" in mats)
+        check("particle instances named after the instanced object", "Cone" in objs, sorted(objs))
+
+        raw, rmeta = read(os.path.join(out, "together_crypto_raw_0001.exr"))
         man = json.loads(rmeta[core.MANIFEST_ATTR])
-        lname = render.layer_name(s)
-        key = "cryptomatte/%s/" % core.layer_key(lname)[:7]
-        check("cryptomatte metadata", cmeta.get(key + "name") == lname and cmeta.get(key + "hash") == "MurmurHash3_32",
-              {k: v for k, v in cmeta.items() if k.startswith("cryptomatte")} if key + "name" not in cmeta else None)
-        ours = json.loads(cmeta[key + "manifest"])
 
-        # coverage + background must sum to 1 wherever there is light
-        def lum(d, g):
-            return sum(d["%s.Combined_%s.%s" % (core.ID_LAYER, g, c)] * w for c, w in zip("RGB", (0.2126, 0.7152, 0.0722)))
-        total = sum(lum(raw, e["group"]) for e in man["entries"]) + sum(lum(raw, g) for g in man["extra_groups"]
-                                                                         if "%s.Combined_%s.R" % (core.ID_LAYER, g) in raw)
-        bg_share = sum(lum(raw, g) for g in man["extra_groups"] if "%s.Combined_%s.R" % (core.ID_LAYER, g) in raw)
-        ranked = sum(crypto["%s%02d.%s" % (lname, k // 2, "GA"[k % 2])] for k in range(s.ranks))
+        def lum(g):
+            return sum(raw["%s.Combined_%s.%s" % (core.ID_LAYER, g, c)] * w for c, w in zip("RGB", (0.2126, 0.7152, 0.0722)))
+        extra = [g for g in man["extra_groups"] if "%s.Combined_%s.R" % (core.ID_LAYER, g) in raw]
+        total = sum(lum(e["group"]) for e in man["entries"]) + sum(lum(g) for g in extra)
+        bg_share = sum(lum(g) for g in extra)
         lit = total > 1e-4
-        err = np.abs(ranked + np.where(lit, bg_share / np.maximum(total, 1e-9), 0) - 1)[lit]
-        check("coverage + background sums to 1 (±0.01)", float(err.max()) <= 0.01,
-              {"max_error": round(float(err.max()), 5), "pixels": int(lit.sum())})
+        for layer in (lo, lm):
+            ranked = sum(b1["%s%02d.%s" % (layer, k // 2, "GA"[k % 2])] for k in range(s.ranks)
+                         if "%s%02d.%s" % (layer, k // 2, "GA"[k % 2]) in b1)
+            # material layer: objects without a material ID still count in the total, so <= 1
+            err = (ranked + np.where(lit, bg_share / np.maximum(total, 1e-9), 0) - 1)[lit]
+            ok = float(np.abs(err).max()) <= 0.01 if layer == lo else float(err.max()) <= 0.01
+            check("%s coverage + background sums to 1 (±0.01)" % layer, ok,
+                  {"max_error": round(float(np.abs(err).max()), 5), "pixels": int(lit.sum())})
 
-        # refraction: Cube_C seen through the ball (centre of frame)
         h, w = total.shape
-        cid = core.id_to_float(core.name_to_id("Cube_C"))
-        cov_c = np.zeros_like(total)
-        for k in range(s.ranks):
-            idc = crypto["%s%02d.%s" % (lname, k // 2, "RB"[k % 2])]
-            cov_c += np.where(idc == np.float32(cid), crypto["%s%02d.%s" % (lname, k // 2, "GA"[k % 2])], 0)
+        cov_c = coverage(b1, lo, "Cube_C", s.ranks)
         centre = cov_c[h // 2 - 20:h // 2 + 20, w // 2 - 20:w // 2 + 20]
         check("Cube_C visible through glass (refracted)", float(centre.max()) > 0.5, round(float(centre.max()), 3))
 
-        # hashes vs Blender's own Cryptomatte manifest (same object names -> same hex)
-        _, bmeta = read(together)
-        native_obj = {}
-        for k, v in bmeta.items():
-            if k.endswith("/manifest") and "CryptoObject" in str(bmeta.get(k[:-len("manifest")] + "name", "")):
-                native_obj = json.loads(v)
-        # Blender's manifest lists the raw hash even when the pixel ID needed the exponent fix
-        # (~1/128 names); its pixels carry the fixed ID, which is what our manifest lists (per spec).
-        common = sorted(set(native_obj) & set(ours))
-        mism = [n for n in common if native_obj[n] != ours[n]
-                and not (native_obj[n] == "%08x" % core.mm3_32(n) and ours[n] == "%08x" % core.name_to_id(n))]
-        check("hashes match Blender's native CryptoObject", common and not mism,
-              {"compared": len(common), "mismatch": mism[:5], "native_only": sorted(set(native_obj) - set(ours))[:8],
-               "ours_only": sorted(set(ours) - set(native_obj))[:8]})
-        R["ids"] = sorted(ours)
+        # direct views must match Blender's own Cryptomatte (positions, particles, label)
+        agree = {}
+        # Blender names instances after the instanced object; CryptoRay does that for particles but
+        # names GN / collection instances after their instancer, so cones are compared as a union.
+        cones = ("Cone", "ConeInstance", "ConeScatter")
+        # (the bottle is compared by its Label material: Blender's object matte also covers the glass)
+        for name, group, layer, nlayer in (
+                ("all cones (particles incl.)", cones, lo, "Beauty.CryptoObject"),
+                ("Label (material)", ("Label",), lm, "Beauty.CryptoMaterial"),
+                ("Cube_L", ("Cube_L",), lo, "Beauty.CryptoObject"), ("Hair", ("Hair",), lo, "Beauty.CryptoObject"),
+                ("ParticleEmitter", ("ParticleEmitter",), lo, "Beauty.CryptoObject")):
+            nat = sum(coverage(b1, nlayer, n, 6, lower=True) for n in group)
+            ours = sum(coverage(b1, layer, n, s.ranks) for n in group)
+            solid = nat > 0.9
+            agree[name] = {"pixels": int(solid.sum()),
+                           "ours>0.5": round(float((ours[solid] > 0.5).mean()), 3) if solid.any() else None}
+        check("direct views match Blender's own CryptoObject (>=95% of solid pixels)",
+              agree["all cones (particles incl.)"]["pixels"] > 0
+              and all(v["ours>0.5"] is None or v["ours>0.5"] >= 0.95 for v in agree.values()), agree)
+        for kind, layer, key in (("CryptoObject", lo, ko), ("CryptoMaterial", lm, km)):
+            nat_man = {}
+            for k, v in meta.items():
+                if k.endswith("/manifest") and kind in str(meta.get(k[:-len("manifest")] + "name", "")):
+                    nat_man = json.loads(v)
+            ours = json.loads(meta[key + "manifest"])
+            common = sorted(set(nat_man) & set(ours))
+            # Blender's manifest lists the raw hash where the spec's exponent fix applies (~1/128 names)
+            mism = [n for n in common if nat_man[n] != ours[n]
+                    and not (nat_man[n] == "%08x" % core.mm3_32(n) and ours[n] == "%08x" % core.name_to_id(n))]
+            check("hashes match Blender's native %s" % kind, common and not mism,
+                  {"compared": len(common), "mismatch": mism[:5]})
 
-        # ---- Material mode, IDs only (beauty layer disabled), RGB packing ----
-        s.mode, s.packing, s.prefix, s.keep_raw = "MATERIAL", "RGB", "mat", False
-        build.build(bpy.context, sc, s)
+        # ---- Object only, IDs only, separate file ----
+        s.use_material, s.embed, s.keep_raw = False, False, False
+        do_build(sc, s)
         uses = [(v, v.use) for v in build.beauty_layers(sc)]
         for v, _ in uses:
             v.use = False
-        render.begin(render.new_job(sc, ids_only=True, out_dir=out))
-        ids_file = render_still(sc, "//acceptance/ids_only")
+        sc.render.filepath = "//acceptance/idsonly_####"
+        naming = render.output_naming(sc)
+        render.begin(render.new_job(sc, ids_only=True, naming=naming))
+        ids_file = render_still(sc, "//acceptance/idsonly_src")
         for v, u in uses:
             v.use = u
-        mat, mmeta = read(os.path.join(out, "mat_0001.exr"))
-        mkey = "cryptomatte/%s/" % core.layer_key("CryptoRayMaterial")[:7]
-        mats = json.loads(mmeta.get(mkey + "manifest", "{}"))
-        check("material mode IDs", {"Red", "Blue", "Green", "Yellow"} <= set(mats), sorted(mats))
+        sep = os.path.join(out, "idsonly_crypto_0001.exr")
+        check("IDs-only: separate <render name>_crypto_<frame>.exr", os.path.isfile(sep), sep)
         check("IDs-only source file removed", not os.path.exists(ids_file), ids_file)
-        native_mat = {}
-        for k, v in bmeta.items():
-            if k.endswith("/manifest") and "CryptoMaterial" in str(bmeta.get(k[:-len("manifest")] + "name", "")):
-                native_mat = json.loads(v)
-        common = sorted(set(native_mat) & set(mats))
-        check("hashes match Blender's native CryptoMaterial", common and all(native_mat[n] == mats[n] for n in common),
-              {"compared": common})
+        if os.path.isfile(sep):
+            d, m = read(sep)
+            check("separate file has preview RGBA + object layer only",
+                  "A" in d and lo + "00.R" in d and lm + "00.R" not in d, sorted(d)[:8])
 
         # ---- Clear restores the scene ----
         build.clear(sc)
@@ -172,7 +212,9 @@ def main():
     finally:
         beauty.use_pass_cryptomatte_object, beauty.use_pass_cryptomatte_material = native
         sc.render.filepath = orig_path
-        s.keep_raw, s.output_dir, s.prefix, s.mode, s.packing = False, "", "crypto", "OBJECT", "SINGLE"
+        for k, v in saved.items():
+            setattr(s, k, v)
+        build.clear(sc)
     R["passed"] = all(c["ok"] for c in R["checks"].values())
 
 

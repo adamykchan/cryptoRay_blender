@@ -90,14 +90,37 @@ def check_collisions(names):
 # Manifest (stored on the ID view layer and in raw EXRs)
 # --------------------------------------------------------------------------
 
+#
+# One entry per light group: {"group": "id_0001", "object": <ID name>, "material": <name or None>}.
+# Several groups can carry the same object name (one per material when material IDs are on), so a
+# layer's matte for a name is the sum of all groups carrying that name.
+
+LAYER_KINDS = ("object", "material")
+DEFAULT_LAYER_NAMES = {"object": "CryptoRayObject", "material": "CryptoRayMaterial"}
+
+
 def group_channel(group, channel):
     return "%s.Combined_%s.%s" % (ID_LAYER, group, channel)
 
 
-def make_manifest(mode, packing, entries, extra_groups=(WORLD_GROUP,)):
-    """entries: list of dicts {name, group, channel} with channel in L/R/G/B."""
-    return {"version": 1, "layer": ID_LAYER, "mode": mode, "packing": packing,
-            "entries": list(entries), "extra_groups": list(extra_groups)}
+def make_manifest(entries, extra_groups=(WORLD_GROUP,), layers=()):
+    """layers: [(kind, Cryptomatte layer name)], kind in LAYER_KINDS."""
+    return {"version": 2, "layer": ID_LAYER, "entries": list(entries), "extra_groups": list(extra_groups),
+            "layers": [list(l) for l in layers]}
+
+
+def layer_names(manifest, kind):
+    """{ID name: [groups]} for one layer kind."""
+    out = {}
+    for e in manifest["entries"]:
+        n = e.get(kind)
+        if n:
+            out.setdefault(n, []).append(e["group"])
+    return out
+
+
+def valid_layer_name(name):
+    return bool(name) and (name[0].isalpha() or name[0] == "_") and all(c.isalnum() or c == "_" for c in name)
 
 
 # --------------------------------------------------------------------------
@@ -182,9 +205,11 @@ def _subset_spec(spec, idxs):
     return s
 
 
-def copy_channels(src, dst, keep, attribs=None):
+def copy_channels(src, dst, keep, attribs=None, extra_parts=()):
     """Write ``dst`` with the channels of ``src`` for which ``keep(name)`` is true, preserving the
-    part structure, per-part metadata and pixel types. Atomic (temp file + replace).
+    part structure, per-part metadata and pixel types, then append ``extra_parts`` [(ImageSpec,
+    HxWxC float32 pixels)]. ``attribs`` go into the first part's header, where Blender and Nuke keep
+    file-level metadata such as Cryptomatte manifests. Atomic (temp file + replace).
     Returns the number of channels written (0 = nothing written)."""
     oiio = _oiio()
     plan = []
@@ -193,11 +218,11 @@ def copy_channels(src, dst, keep, attribs=None):
             idxs = [i for i, n in enumerate(names) if keep(n)]
             if idxs:
                 plan.append((si, idxs, _subset_spec(spec, idxs)))
+        plan += [(None, px, spec) for spec, px in extra_parts]
         if not plan:
             return 0
-        for _, _, s in plan:
-            for k, v in (attribs or {}).items():
-                s.attribute(k, v)
+        for k, v in (attribs or {}).items():
+            plan[0][2].attribute(k, v)
         tmp = _temp_path(dst)
         out = oiio.ImageOutput.create(tmp)
         if out is None:
@@ -212,7 +237,7 @@ def copy_channels(src, dst, keep, attribs=None):
             for n, (si, idxs, s) in enumerate(plan):
                 if n and not out.open(tmp, s, "AppendSubimage"):
                     raise IOError(out.geterror())
-                px = r.channels(si, idxs)
+                px = idxs if si is None else r.channels(si, idxs)
                 if not out.write_image(_np().ascontiguousarray(px)):
                     raise IOError(out.geterror())
         except Exception:
@@ -222,7 +247,7 @@ def copy_channels(src, dst, keep, attribs=None):
             raise
         out.close()
     os.replace(tmp, dst)
-    return sum(len(i) for _, i, _ in plan)
+    return sum(s.nchannels for _, _, s in plan)
 
 
 def is_id_channel(name):
@@ -233,11 +258,13 @@ def is_id_channel(name):
 # Conversion
 # --------------------------------------------------------------------------
 
-def _value(reader, group, channel):
-    if channel == "L":
-        r, g, b = (reader.channel(group_channel(group, c)) for c in "RGB")
-        return r * 0.2126 + g * 0.7152 + b * 0.0722
-    return reader.channel(group_channel(group, channel))
+def _value(reader, group):
+    np = _np()
+    r, g, b = (reader.channel(group_channel(group, c)) for c in "RGB")
+    v = r * 0.2126 + g * 0.7152 + b * 0.0722
+    np.maximum(v, 0, out=v)
+    v[~np.isfinite(v)] = 0
+    return v
 
 
 def _preview_rgb(bits):
@@ -249,146 +276,191 @@ def _preview_rgb(bits):
     return [0.2 + 0.8 * c for c in (r, g, b)]
 
 
-def convert(src, manifest, crypto_path, ranks=6, layer_name="CryptoRayObject",
-            normalization="SUM", raw_path=None, strip_source=False, delete_source=False):
-    """Read the light-group passes of ``manifest`` from ``src`` (Blender multilayer EXR) and write a
-    Cryptomatte EXR to ``crypto_path``.
+def _rank(reader, by_name, count, size):
+    """Streaming top-``count`` insertion over all names -> (ids uint32, weights float32), each
+    (count, pixels), sorted by weight per pixel."""
+    np = _np()
+    weights = np.zeros((count, size), np.float32)
+    ids = np.zeros((count, size), np.uint32)
+    for name in sorted(by_name):
+        v = None
+        for g in by_name[name]:
+            x = _value(reader, g)
+            v = x if v is None else v + x
+        flat = v.ravel()
+        active = np.flatnonzero(flat > weights[-1])
+        if active.size == 0:
+            continue
+        cw = flat[active].copy()
+        ci = np.full(active.size, name_to_id(name), np.uint32)
+        for k in range(count):
+            swap = cw > weights[k, active]
+            if not swap.any():
+                continue
+            pos = active[swap]
+            ow, oi = weights[k, pos].copy(), ids[k, pos].copy()
+            weights[k, pos], ids[k, pos] = cw[swap], ci[swap]
+            cw[swap], ci[swap] = ow, oi
+    return ids, weights
 
-    normalization: "SUM"  -> coverage = value / (sum of all IDs + world + other), so coverage sums to 1
+
+def layer_attribs(layer_name, names):
+    key = "cryptomatte/%s/" % layer_key(layer_name)[:7]
+    return {key + "name": layer_name, key + "hash": "MurmurHash3_32",
+            key + "conversion": "uint32_to_float32", key + "manifest": manifest_for(names)}
+
+
+def convert(src, manifest, layers=None, ranks=6, normalization="SUM", crypto_path=None, embed=False,
+            raw_path=None, delete_source=False):
+    """Turn the light-group passes listed in ``manifest`` (read from ``src``, a Blender multilayer
+    EXR) into Cryptomatte layers.
+
+    layers:        [(kind, name)], kind "object" / "material". Default: manifest["layers"].
+    normalization: "SUM"  -> coverage = value / (all IDs + world + other), so coverage sums to 1
                               wherever there is signal (undoes glass absorption / Fresnel loss).
                    "RAW"  -> coverage = value (energy actually reaching the camera, clamped to 0..1).
-    raw_path:      also keep the raw ID passes (plus the manifest in the header) there.
-    strip_source:  rewrite ``src`` without the ID passes (beauty stays bit-identical).
-    delete_source: remove ``src`` afterwards (used when the file only holds ID passes).
+    embed:         write the Cryptomatte layers into ``src`` itself, one part per rank pair with the
+                   metadata in the first part's header (the layout of Blender's own Cryptomatte).
+                   Otherwise they go to ``crypto_path``: a float EXR with a colour-coded RGBA preview.
+    raw_path:      also keep the raw ID passes there (manifest in the header).
+    The ID passes are always removed from ``src``; ``delete_source`` deletes the file instead (used
+    when it only holds ID passes).
     """
     np = _np()
     oiio = _oiio()
     t0 = time.time()
     if not 1 <= ranks <= 16:
         raise ValueError("ranks must be 1..16")
+    layers = [tuple(l) for l in (layers if layers is not None else manifest.get("layers", []))]
+    if not layers:
+        raise ValueError("No Cryptomatte layers requested")
+    if len({n for _, n in layers}) != len(layers):
+        raise ValueError("Cryptomatte layer names must differ")
+    for kind, name in layers:
+        if kind not in LAYER_KINDS or not valid_layer_name(name):
+            raise ValueError("Bad Cryptomatte layer %r (%s)" % (name, kind))
+    if embed and delete_source:
+        raise ValueError("embed and delete_source exclude each other")
+    if not embed and not crypto_path:
+        raise ValueError("crypto_path is needed unless embedding")
     entries = manifest["entries"]
     if not entries:
         raise ValueError("Manifest has no IDs")
-    names = sorted({e["name"] for e in entries})
-    check_collisions(names)
-    count = min(ranks, len(names))
 
+    results = []
     with ExrReader(src) as r:
-        missing = [group_channel(e["group"], "R" if e["channel"] == "L" else e["channel"])
-                   for e in entries if group_channel(e["group"], "R" if e["channel"] == "L" else e["channel"]) not in r.locate]
+        missing = [group_channel(e["group"], "R") for e in entries if group_channel(e["group"], "R") not in r.locate]
         if missing:
             raise ValueError("%s has no ID passes %s... (was the %s layer rendered?)" % (src, missing[:3], ID_LAYER))
         spec0 = r.parts[r.locate[group_channel(entries[0]["group"], "R")][0]][0]
         h, w = spec0.height, spec0.width
-
-        # accumulate per name (several entries may share a name, e.g. material across objects)
-        by_name = {}
-        for e in entries:
-            by_name.setdefault(e["name"], []).append(e)
-
-        total = np.zeros((h, w), np.float32)
-        weights = np.zeros((count, h * w), np.float32)
-        ids = np.zeros((count, h * w), np.uint32)
-        for name in names:
-            v = None
-            for e in by_name[name]:
-                x = _value(r, e["group"], e["channel"])
-                v = x if v is None else v + x
-            np.maximum(v, 0, out=v)
-            v[~np.isfinite(v)] = 0
-            total += v
-            flat = v.ravel()
-            active = np.flatnonzero(flat > weights[-1])
-            if active.size == 0:
+        total = np.zeros(h * w, np.float32)
+        groups = sorted({e["group"] for e in entries})
+        groups += [g for g in manifest.get("extra_groups", []) if group_channel(g, "R") in r.locate]
+        for g in groups:
+            total += _value(r, g).ravel()
+        for kind, lname in layers:
+            by_name = layer_names(manifest, kind)
+            if not by_name:
                 continue
-            cw = flat[active].copy()
-            ci = np.full(active.size, name_to_id(name), np.uint32)
-            for k in range(count):          # streaming insertion into the sorted top-N
-                swap = cw > weights[k, active]
-                if not swap.any():
-                    continue
-                pos = active[swap]
-                ow, oi = weights[k, pos].copy(), ids[k, pos].copy()
-                weights[k, pos], ids[k, pos] = cw[swap], ci[swap]
-                cw[swap], ci[swap] = ow, oi
-        for g in manifest.get("extra_groups", []):
-            if group_channel(g, "R") in r.locate:
-                x = _value(r, g, "L")
-                np.maximum(x, 0, out=x)
-                x[~np.isfinite(x)] = 0
-                total += x
-        tflat = total.ravel()
+            check_collisions(list(by_name))
+            ids, weights = _rank(r, by_name, min(ranks, len(by_name)), h * w)
+            results.append((lname, sorted(by_name), ids, weights))
+    if not results:
+        raise ValueError("None of the requested layers has IDs")
 
-    if normalization == "SUM":
-        ok = tflat > 1e-6
-        weights[:, ok] /= tflat[ok]
-        weights[:, ~ok] = 0
-    elif normalization == "RAW":
-        np.clip(weights, 0, 1, out=weights)
-    else:
-        raise ValueError("normalization must be SUM or RAW")
-    ids[weights <= 0] = 0
-    weights[weights < 0] = 0
+    for _, _, ids, weights in results:
+        if normalization == "SUM":
+            ok = total > 1e-6
+            weights[:, ok] /= total[ok]
+            weights[:, ~ok] = 0
+        elif normalization == "RAW":
+            np.clip(weights, 0, 1, out=weights)
+        else:
+            raise ValueError("normalization must be SUM or RAW")
+        ids[weights <= 0] = 0
+        weights[weights < 0] = 0
 
-    # -------- write the Cryptomatte EXR (single part, float32) --------
-    chans = {}
-    col = [np.zeros(h * w, np.float32) for _ in range(3)]
-    for k in range(count):
-        for c, p in zip(col, _preview_rgb(ids[k])):
-            c += p * weights[k] * (ids[k] != 0)
-    alpha = weights.sum(axis=0)
-    chans["R"], chans["G"], chans["B"], chans["A"] = col[0], col[1], col[2], np.minimum(alpha, 1)
-    for pair in range((count + 1) // 2):
-        for off, (ic, wc) in enumerate((("R", "G"), ("B", "A"))):
-            k = pair * 2 + off
-            pre = "%s%02d." % (layer_name, pair)
-            if k < count:
-                chans[pre + ic] = ids[k].view(np.float32)
-                chans[pre + wc] = weights[k]
-            else:
-                chans[pre + ic] = np.zeros(h * w, np.float32)
-                chans[pre + wc] = np.zeros(h * w, np.float32)
-    order = list(chans)
-    spec = oiio.ImageSpec(w, h, len(order), "float")
-    for a in ("x", "y", "full_x", "full_y", "full_width", "full_height"):
-        setattr(spec, a, getattr(spec0, a))
-    spec.channelnames = tuple(order)
-    spec.alpha_channel = 3
-    spec.attribute("compression", "zip")
-    key = "cryptomatte/%s/" % layer_key(layer_name)[:7]
-    spec.attribute(key + "name", layer_name)
-    spec.attribute(key + "hash", "MurmurHash3_32")
-    spec.attribute(key + "conversion", "uint32_to_float32")
-    spec.attribute(key + "manifest", manifest_for(names))
-    spec.attribute("cryptoray/normalization", normalization)
-    spec.attribute("cryptoray/mode", manifest.get("mode", ""))
-    os.makedirs(os.path.dirname(os.path.abspath(crypto_path)), exist_ok=True)
-    tmp = _temp_path(crypto_path)
-    out = oiio.ImageOutput.create(tmp)
-    if out is None or not out.open(tmp, spec):
-        raise IOError("Cannot write %s: %s" % (crypto_path, oiio.geterror() if out is None else out.geterror()))
-    buf = np.ascontiguousarray(np.stack([chans[n] for n in order], -1).reshape(h, w, len(order)))
-    ok = out.write_image(buf)
-    err = out.geterror()
-    out.close()
-    if not ok:
-        os.remove(tmp)
-        raise IOError("Cannot write %s: %s" % (crypto_path, err))
-    os.replace(tmp, crypto_path)
+    def base_spec(chans):
+        spec = oiio.ImageSpec(w, h, len(chans), "float")
+        for a in ("x", "y", "full_x", "full_y", "full_width", "full_height"):
+            setattr(spec, a, getattr(spec0, a))
+        spec.channelnames = tuple(chans)
+        spec.alpha_channel = -1
+        spec.attribute("compression", "zip")
+        return spec
 
-    # -------- raw passes / source handling --------
+    def rank_parts(lname, ids, weights):
+        """[(part name, 4 channel names, HxWx4 pixels)], one per rank pair, zero-padded."""
+        out = []
+        count = ids.shape[0]
+        for pair in range((count + 1) // 2):
+            planes = []
+            for k in (pair * 2, pair * 2 + 1):
+                if k < count:
+                    planes += [ids[k].view(np.float32), weights[k]]
+                else:
+                    planes += [np.zeros(h * w, np.float32)] * 2
+            pre = "%s%02d" % (lname, pair)
+            out.append((pre, [pre + ".R", pre + ".G", pre + ".B", pre + ".A"],
+                        np.stack(planes, -1).reshape(h, w, 4)))
+        return out
+
+    attribs = {"cryptoray/normalization": normalization}
+    for lname, names, _, _ in results:
+        attribs.update(layer_attribs(lname, names))
+
     if raw_path:
         os.makedirs(os.path.dirname(os.path.abspath(raw_path)), exist_ok=True)
         copy_channels(src, raw_path, is_id_channel, {MANIFEST_ATTR: json.dumps(manifest)})
-    if delete_source:
-        os.remove(src)
-    elif strip_source:
-        if copy_channels(src, src, lambda n: not is_id_channel(n)) == 0:
+
+    _, _, ids0, weights0 = results[0]
+    cover0 = weights0.sum(axis=0)
+    if embed:
+        extra = []
+        for lname, _, ids, weights in results:
+            for part, chans, px in rank_parts(lname, ids, weights):
+                spec = base_spec(chans)
+                spec.attribute("name", part)
+                extra.append((spec, px))
+        copy_channels(src, src, lambda n: not is_id_channel(n), attribs, extra)
+        out_path = src
+    else:
+        col = [np.zeros(h * w, np.float32) for _ in range(3)]
+        for k in range(ids0.shape[0]):
+            for c, p in zip(col, _preview_rgb(ids0[k])):
+                c += p * weights0[k] * (ids0[k] != 0)
+        chans, planes = ["R", "G", "B", "A"], [col[0], col[1], col[2], np.minimum(cover0, 1)]
+        for lname, _, ids, weights in results:
+            for _, names, px in rank_parts(lname, ids, weights):
+                chans += names
+                planes += [px[..., i].ravel() for i in range(4)]
+        spec = base_spec(chans)
+        spec.alpha_channel = 3
+        for k, v in attribs.items():
+            spec.attribute(k, v)
+        os.makedirs(os.path.dirname(os.path.abspath(crypto_path)), exist_ok=True)
+        tmp = _temp_path(crypto_path)
+        out = oiio.ImageOutput.create(tmp)
+        if out is None or not out.open(tmp, spec):
+            raise IOError("Cannot write %s: %s" % (crypto_path, oiio.geterror() if out is None else out.geterror()))
+        ok = out.write_image(np.ascontiguousarray(np.stack(planes, -1).reshape(h, w, len(chans))))
+        err = out.geterror()
+        out.close()
+        if not ok:
+            os.remove(tmp)
+            raise IOError("Cannot write %s: %s" % (crypto_path, err))
+        os.replace(tmp, crypto_path)
+        if delete_source:
+            os.remove(src)
+        elif copy_channels(src, src, lambda n: not is_id_channel(n)) == 0:
             os.remove(src)   # nothing but ID passes in there
+        out_path = crypto_path
 
     with np.errstate(all="ignore"):
-        lost = float(np.max(np.where(tflat > 1e-6, 1.0 - alpha, 0))) if normalization == "SUM" else None
-    return {"crypto": crypto_path, "ids": len(names), "ranks": count, "width": w, "height": h,
+        lost = float(np.max(np.where(total > 1e-6, 1.0 - cover0, 0))) if normalization == "SUM" else None
+    return {"crypto": out_path, "embedded": embed, "layers": [l[0] for l in results],
+            "ids": sum(len(l[1]) for l in results), "ranks": ids0.shape[0], "width": w, "height": h,
             "max_uncovered_share": lost, "seconds": round(time.time() - t0, 3)}
 
 
@@ -404,4 +476,4 @@ def convert_raw_file(raw_path, crypto_path, **kw):
         inp.close()
     if not text:
         raise ValueError("%s has no %s header" % (raw_path, MANIFEST_ATTR))
-    return convert(raw_path, json.loads(text), crypto_path, **kw)
+    return convert(raw_path, json.loads(text), crypto_path=crypto_path, **kw)

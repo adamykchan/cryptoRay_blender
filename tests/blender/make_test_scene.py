@@ -4,11 +4,13 @@ Run in Blender's Text Editor (Run Script) or:
     blender --python tests/blender/make_test_scene.py
 
 Creates scene "CryptoRay_Test":
-  * Cube_L / Cube_C / Cube_R behind a glass sphere (IOR 1.45) - Cube_C is animated (frames 1-24),
-    Cube_R has two materials (red + blue) for the Material mode
-  * GlassBall in collection "Glass" (set as CryptoRay glass collection)
+  * Cube_L / Cube_C / Cube_R behind a glass sphere (IOR 1.45) - Cube_C moves up and down,
+    Cube_R has two materials (red + blue) for the Material IDs
+  * GlassBall in collection "Glass" (its material is detected as glass automatically)
+  * Bottle: one object with a glass body and a paper "Label" material (per-material glass)
   * Instancers: a collection instance, a Geometry Nodes scatter, a hair curves object, and a legacy
-    particle system (not supported - shows the warning)
+    hair particle system instancing cones
+  * Camera orbits the ball once over frames 1-96, so every element passes behind the glass
   * Multilayer EXR output (32-bit ZIP) to //render/beauty_####.exr
 Set ROUGHNESS below to 0.3 for the rough-glass acceptance test, or N_EXTRA to add many cubes.
 """
@@ -19,7 +21,19 @@ import bpy
 
 ROUGHNESS = 0.0
 N_EXTRA = 0          # e.g. 47 -> 50 target objects for the stress test
+FRAMES = 96          # camera orbit length
 SCENE = "CryptoRay_Test"
+
+
+def _fcurves(obj):
+    """F-curves of an object's action (layered actions in Blender 4.4+/5.x, plain before)."""
+    act = obj.animation_data.action
+    try:
+        from bpy_extras import anim_utils
+        bag = anim_utils.action_get_channelbag_for_slot(act, obj.animation_data.action_slot)
+        return list(bag.fcurves) if bag else []
+    except (ImportError, AttributeError):
+        return list(act.fcurves)
 
 
 def material(name, color=None, glass=False, rough=0.0):
@@ -60,11 +74,13 @@ def collection(scene, name):
 
 def main():
     old = bpy.data.scenes.get(SCENE)
+    sc = bpy.data.scenes.new(SCENE + "_new")
+    for win in bpy.context.window_manager.windows:
+        win.scene = sc
     if old:
         bpy.data.scenes.remove(old)
-    sc = bpy.data.scenes.new(SCENE)
-    if bpy.context.window:
-        bpy.context.window.scene = sc
+        bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=False, do_recursive=True)  # its objects etc.
+    sc.name = SCENE
     sc.render.engine = "CYCLES"
     sc.cycles.device = "GPU"
     sc.cycles.samples = 64
@@ -72,7 +88,7 @@ def main():
     sc.cycles.use_denoising = False
     sc.render.resolution_x, sc.render.resolution_y = 640, 360
     sc.frame_start = 1
-    sc.frame_end = 24
+    sc.frame_end = FRAMES
     sc.render.filepath = "//render/beauty_####"
     im = sc.render.image_settings
     if hasattr(im, "media_type"):
@@ -98,9 +114,9 @@ def main():
 
     mesh_object("Cube_L", cube, props, (-1.3, 3, 0), [red])
     cc = mesh_object("Cube_C", cube, props, (0, 3.5, -0.8), [green])
-    cc.keyframe_insert("location", frame=1)
-    cc.location.z = 0.8
-    cc.keyframe_insert("location", frame=24)
+    for k, f in enumerate(range(1, FRAMES + 2, 24)):      # up and down every 24 frames
+        cc.location.z = -0.8 if k % 2 == 0 else 0.8
+        cc.keyframe_insert("location", index=2, frame=f)
     cr = mesh_object("Cube_R", cube, props, (1.3, 3, 0), [red, blue])
     for i, p in enumerate(cr.data.polygons):
         p.material_index = i % 2
@@ -112,6 +128,14 @@ def main():
                        glass, (0, 0, 0), [material("Glass", glass=True, rough=ROUGHNESS)])
     for p in ball.data.polygons:
         p.use_smooth = True
+
+    # one object, two materials: glass body (detected automatically) + paper label (gets an ID)
+    bottle = mesh_object("Bottle", lambda bm: bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=0.4),
+                         props, (1.1, -2.4, -1.0), [material("BottleGlass", glass=True), material("Label", (0.9, 0.85, 0.7))])
+    bottle.scale.z = 1.5
+    for p in bottle.data.polygons:
+        p.use_smooth = True
+        p.material_index = 1 if abs(p.center.z) < 0.13 else 0
 
     ld = bpy.data.lights.new("Key", "AREA")
     ld.energy, ld.size = 400, 3
@@ -131,6 +155,15 @@ def main():
     cd.lens = 32
     co = bpy.data.objects.new("Cam", cd)
     co.location, co.rotation_euler = (0, -6.5, 0.4), (math.radians(88), 0, 0)
+    rig = bpy.data.objects.new("CamOrbit", None)         # camera orbits the ball once
+    co.parent = rig
+    for f, angle in ((1, 0.0), (FRAMES + 1, 360.0)):
+        rig.rotation_euler.z = math.radians(angle)
+        rig.keyframe_insert("rotation_euler", index=2, frame=f)
+    for fc in _fcurves(rig):
+        for kp in fc.keyframe_points:
+            kp.interpolation = "LINEAR"
+    cam.objects.link(rig)
     cam.objects.link(co)
     sc.camera = co
 
@@ -167,19 +200,16 @@ def main():
         v.value = 0.025
     hc.materials.append(yellow)
     ho = bpy.data.objects.new("Hair", hc)
-    ho.location = (-1.6, -2.0, 1.2)
+    ho.location = (-1.6, -2.0, 0.45)
     inst.objects.link(ho)
 
     pe = mesh_object("ParticleEmitter", lambda bm: bmesh.ops.create_grid(bm, x_segments=1, y_segments=1, size=0.4),
                      inst, (1.7, -1.5, -1.4), [green])
     ps = pe.modifiers.new("Particles", "PARTICLE_SYSTEM").particle_system
-    ps.settings.type, ps.settings.count = "HAIR", 5
+    ps.settings.type, ps.settings.count = "HAIR", 8
     ps.settings.render_type, ps.settings.instance_object = "OBJECT", cone
     ps.settings.particle_size = 0.5
-
-    s = sc.cryptoray if hasattr(sc, "cryptoray") else None
-    if s is not None:
-        s.glass_collection = glass
+    # glass is found by material (GlassBall, Bottle body); no Glass collection needed
     sc.frame_set(1)
     return sc
 

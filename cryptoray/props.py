@@ -2,24 +2,28 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
 
 
-def _check_layer_name(self, context):
-    n = self.layer_name.strip()
-    if n and not (n[0].isalpha() or n[0] == "_") or any(not (c.isalnum() or c == "_") for c in n):
-        self["layer_name"] = "".join(c for c in n if c.isalnum() or c == "_")
+def _clean(key):
+    def update(self, context):
+        n = self[key] if key in self else ""
+        clean = "".join(c for c in n.strip() if c.isalnum() or c == "_")
+        if clean and not (clean[0].isalpha() or clean[0] == "_"):
+            clean = "_" + clean
+        if clean != n:
+            self[key] = clean
+    return update
 
 
 class CryptoRaySettings(bpy.types.PropertyGroup):
-    mode: EnumProperty(
-        name="ID Type",
-        items=[("OBJECT", "Object", "One ID per object (named like Blender's CryptoObject)"),
-               ("MATERIAL", "Material", "One ID per material (named like Blender's CryptoMaterial)")],
-        default="OBJECT")
-    packing: EnumProperty(
-        name="Packing",
-        items=[("SINGLE", "1 ID per Group", "White emission, one light group per ID. Works through tinted glass"),
-               ("RGB", "3 IDs per Group", "R/G/B emission, three IDs per light group: a third of the passes, "
-                                          "but only correct through neutral (untinted) glass")],
-        default="SINGLE")
+    use_object: BoolProperty(name="Object", default=True,
+                             description="One ID per object (named like Blender's CryptoObject)")
+    object_layer: StringProperty(name="Object Layer", default="CryptoRayObject", update=_clean("object_layer"),
+                                 description="Cryptomatte layer name for object IDs, as shown in Nuke")
+    use_material: BoolProperty(name="Material", default=False,
+                               description="One ID per material (named like Blender's CryptoMaterial). "
+                                           "Both can be on: they come from the same render")
+    material_layer: StringProperty(name="Material Layer", default="CryptoRayMaterial",
+                                   update=_clean("material_layer"),
+                                   description="Cryptomatte layer name for material IDs, as shown in Nuke")
     scope: EnumProperty(
         name="Targets",
         items=[("ALL", "All Visible", "Every visible object except glass gets an ID"),
@@ -27,18 +31,18 @@ class CryptoRaySettings(bpy.types.PropertyGroup):
                                             "objects still occlude correctly")],
         default="ALL")
     target_collection: PointerProperty(name="Target Collection", type=bpy.types.Collection)
+    detect_glass: BoolProperty(
+        name="Detect Glass Materials", default=True,
+        description="Materials that refract (Glass or Refraction BSDF, Principled with Transmission) keep "
+                    "their real shader in the ID layer. Override per material below")
     glass_collection: PointerProperty(
-        name="Glass", type=bpy.types.Collection,
-        description="Objects in here keep their real materials in the ID layer (refractive glass, liquids). "
-                    "Objects can also be tagged with the custom property matte_role = \"glass\"")
-    output_dir: StringProperty(
-        name="Output Folder", subtype="DIR_PATH", default="",
-        description="Where the Cryptomatte EXRs go. Empty = next to the beauty render output")
-    prefix: StringProperty(name="File Prefix", default="crypto",
-                           description="Files are named <prefix>_<frame>.exr")
-    layer_name: StringProperty(
-        name="Cryptomatte Layer", default="", update=_check_layer_name,
-        description="Cryptomatte layer name shown in Nuke. Empty = CryptoRayObject / CryptoRayMaterial")
+        name="Glass Collection", type=bpy.types.Collection,
+        description="Optional: whole objects in here keep their real materials in the ID layer. Objects can "
+                    "also be tagged with the custom property matte_role = \"glass\"")
+    embed: BoolProperty(
+        name="Embed in Beauty EXR", default=True,
+        description="Write the Cryptomatte layers into the beauty EXR. Off: a separate "
+                    "<render name>_crypto_<frame>.exr next to it. IDs Only renders always write a separate file")
     ranks: IntProperty(name="Levels", default=6, min=1, max=16,
                        description="IDs stored per pixel (Cryptomatte depth). 6 is the usual default")
     normalization: EnumProperty(
@@ -49,21 +53,30 @@ class CryptoRaySettings(bpy.types.PropertyGroup):
     matte_samples: IntProperty(name="Matte Samples", default=0, min=0,
                                description="Samples for the ID layer. 0 = same as the scene")
     keep_raw: BoolProperty(name="Keep Raw ID Passes", default=False,
-                           description="Also save the raw light-group passes (+ manifest) next to the Cryptomatte")
-    strip_beauty: BoolProperty(name="Strip IDs from Beauty", default=True,
-                               description="Remove the ID passes from the beauty EXR after conversion")
+                           description="Also save the raw light-group passes (+ manifest) next to the render")
     auto_rebuild: BoolProperty(name="Rebuild Before Render", default=True,
-                               description="CryptoRay render buttons rebuild the ID layer first, so new "
+                               description="The render buttons rebuild the ID layer first, so new or changed "
                                            "objects are always included")
+    delete_after: BoolProperty(name="Delete After Render", default=True,
+                               description="Remove the ID layer and its proxies when the render finishes, "
+                                           "leaving the scene exactly as before")
     group_warning: IntProperty(name="Warn Above", default=64, min=1,
                                description="Warn when more light groups than this are needed (GPU memory)")
+    show_glass: BoolProperty(name="Glass Materials", default=False)
 
 
 def register():
     bpy.utils.register_class(CryptoRaySettings)
     bpy.types.Scene.cryptoray = PointerProperty(type=CryptoRaySettings)
+    bpy.types.Material.cryptoray_glass = EnumProperty(
+        name="CryptoRay Glass",
+        items=[("AUTO", "Auto", "Glass if the shader refracts (when Detect Glass Materials is on)"),
+               ("GLASS", "Glass", "Always keep this material's real shader in the ID layer (no ID)"),
+               ("SOLID", "Not Glass", "Always give this material an ID")],
+        default="AUTO")
 
 
 def unregister():
+    del bpy.types.Material.cryptoray_glass
     del bpy.types.Scene.cryptoray
     bpy.utils.unregister_class(CryptoRaySettings)

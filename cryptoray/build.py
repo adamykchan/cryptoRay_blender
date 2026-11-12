@@ -3,10 +3,13 @@
 Nothing that already exists in the scene is edited. Build only ADDS:
   * view layer ``ID_MATTES`` (all user collections excluded, own world override, own samples),
   * collection ``ID_MATTES_proxies`` (excluded from every other view layer),
-  * one proxy object per ID: an empty mesh/curves/point-cloud object whose Geometry Nodes modifier
-    reads the original through Object Info (so animation, deformation and modifiers follow live)
-    and assigns an emission material; glass proxies keep the original materials,
-  * the emission materials, the ID world and the node groups.
+  * proxy objects: an empty mesh/curves/point-cloud object whose Geometry Nodes modifier reads the
+    original through Object Info (so animation, deformation and modifiers follow live) and assigns
+    a white emission material. Glass keeps its real materials. Objects mixing glass and other
+    materials are split per material, so a bottle's label gets an ID while the glass refracts,
+  * for legacy particle systems: a copy of the emitter whose particles instance proxies of the
+    instanced objects (same seed and settings, so the same particles),
+  * the emission material, the ID world and the node groups.
 Every added datablock carries the custom property ``cryptoray`` so Clear removes exactly those.
 """
 
@@ -18,13 +21,15 @@ from . import core
 
 TAG = "cryptoray"
 PROXY_COLLECTION = "ID_MATTES_proxies"
+SOURCES_COLLECTION = "ID_MATTES_instance_sources"
 MANIFEST_PROP = "cryptoray_manifest"
 SOURCE_PROP = "cryptoray_source"
-VERSION = 1
+VERSION = 2
 
 RENDERABLE = {"MESH", "CURVE", "SURFACE", "FONT", "META", "CURVES", "POINTCLOUD", "EMPTY"}
 VIS_FLAGS = ("visible_camera", "visible_diffuse", "visible_glossy", "visible_transmission",
              "visible_volume_scatter", "visible_shadow")
+GLASS_NODES = {"ShaderNodeBsdfGlass", "ShaderNodeBsdfRefraction"}
 
 
 class BuildError(Exception):
@@ -56,6 +61,71 @@ def beauty_layers(scene):
     return [v for v in scene.view_layers if not is_ours(v)]
 
 
+def requested_layers(settings):
+    """[(kind, Cryptomatte layer name)] from the settings."""
+    out = []
+    if settings.use_object:
+        out.append(("object", settings.object_layer.strip() or core.DEFAULT_LAYER_NAMES["object"]))
+    if settings.use_material:
+        out.append(("material", settings.material_layer.strip() or core.DEFAULT_LAYER_NAMES["material"]))
+    return out
+
+
+# --------------------------------------------------------------------------
+# Glass materials
+# --------------------------------------------------------------------------
+
+def _transmissive(tree, starts, seen):
+    stack, visited = list(starts), set()
+    while stack:
+        n = stack.pop()
+        if n.as_pointer() in visited or n.mute:
+            continue
+        visited.add(n.as_pointer())
+        if n.bl_idname in GLASS_NODES:
+            return True
+        if n.bl_idname == "ShaderNodeBsdfPrincipled":
+            for key in ("Transmission Weight", "Transmission"):
+                s = n.inputs.get(key)
+                if s is not None and (s.is_linked or s.default_value > 0):
+                    return True
+        if n.bl_idname == "ShaderNodeGroup" and n.node_tree is not None and n.node_tree not in seen:
+            seen.add(n.node_tree)
+            outs = [x for x in n.node_tree.nodes if x.bl_idname == "NodeGroupOutput"]
+            if _transmissive(n.node_tree, outs, seen):
+                return True
+        for s in n.inputs:
+            for link in s.links:
+                if not link.is_muted:
+                    stack.append(link.from_node)
+    return False
+
+
+def detect_glass(mat):
+    """True when the material's surface shader refracts (Glass / Refraction BSDF, or Principled
+    with Transmission above 0 or driven by a texture). Node groups are followed."""
+    tree = getattr(mat, "node_tree", None)
+    if tree is None:
+        return False
+    outs = [n for n in tree.nodes if n.bl_idname == "ShaderNodeOutputMaterial"]
+    active = [n for n in outs if n.is_active_output and n.target in ("ALL", "CYCLES")]
+    starts = []
+    for n in active or outs[:1]:
+        s = n.inputs.get("Surface")
+        if s is not None:
+            starts += [l.from_node for l in s.links if not l.is_muted]
+    return _transmissive(tree, starts, set())
+
+
+def is_glass(mat, settings):
+    mode = getattr(mat, "cryptoray_glass", "AUTO")
+    if mode == "GLASS":
+        return True
+    if mode == "SOLID":
+        return False
+    return settings.detect_glass and detect_glass(mat)
+
+
 # --------------------------------------------------------------------------
 # Shared datablocks
 # --------------------------------------------------------------------------
@@ -77,6 +147,22 @@ def _emission_material(name, color):
     return m
 
 
+def _transparent_material():
+    m = bpy.data.materials.get("CR_transparent")
+    if m is not None and is_ours(m):
+        return m
+    m = _tag(bpy.data.materials.new("CR_transparent"))
+    m.use_nodes = True
+    nt = m.node_tree
+    nt.nodes.clear()
+    t = nt.nodes.new("ShaderNodeBsdfTransparent")
+    t.inputs["Color"].default_value = (1, 1, 1, 1)
+    o = nt.nodes.new("ShaderNodeOutputMaterial")
+    o.location = (250, 0)
+    nt.links.new(t.outputs[0], o.inputs["Surface"])
+    return m
+
+
 def _id_world():
     w = bpy.data.worlds.get("CR_id_world")
     if w is not None and is_ours(w):
@@ -90,7 +176,8 @@ def _id_world():
 
 
 def _node_group(kind):
-    """kind: 'emit' (Source, Emit), 'keep' (Source), 'matsel' (Source, Only, Emit)."""
+    """kind: 'emit' (Source, Emit), 'keep' (Source), 'matsel' (Source, Only, Emit: only the faces
+    using one material, emitting), 'keepsel' (Source, Only: those faces with their real material)."""
     name = "CR_proxy_" + kind
     g = bpy.data.node_groups.get(name)
     if g is not None and is_ours(g) and g.get("cryptoray_v") == VERSION:
@@ -99,9 +186,11 @@ def _node_group(kind):
     g["cryptoray_v"] = VERSION
     g.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
     g.interface.new_socket("Source", in_out="INPUT", socket_type="NodeSocketObject")
-    if kind == "matsel":
+    select = kind in ("matsel", "keepsel")
+    emit = kind in ("emit", "matsel")
+    if select:
         g.interface.new_socket("Only", in_out="INPUT", socket_type="NodeSocketMaterial")
-    if kind != "keep":
+    if emit:
         g.interface.new_socket("Emit", in_out="INPUT", socket_type="NodeSocketMaterial")
     n, l = g.nodes, g.links
     gi, go = n.new("NodeGroupInput"), n.new("NodeGroupOutput")
@@ -109,7 +198,7 @@ def _node_group(kind):
     oi.transform_space = "RELATIVE"
     l.new(gi.outputs["Source"], oi.inputs["Object"])
     geo = oi.outputs["Geometry"]
-    if kind == "matsel":
+    if select:
         rl = n.new("GeometryNodeRealizeInstances")
         l.new(geo, rl.inputs["Geometry"])
         ms = n.new("GeometryNodeMaterialSelection")
@@ -122,7 +211,7 @@ def _node_group(kind):
         l.new(rl.outputs[0], dl.inputs["Geometry"])
         l.new(inv.outputs[0], dl.inputs["Selection"])
         geo = dl.outputs[0]
-    if kind != "keep":
+    if emit:
         sm = n.new("GeometryNodeSetMaterial")
         l.new(geo, sm.inputs["Geometry"])
         l.new(gi.outputs["Emit"], sm.inputs["Material"])
@@ -131,6 +220,21 @@ def _node_group(kind):
     for i, node in enumerate(g.nodes):
         node.location = (i * 200, 0)
     return g
+
+
+def _keep_faces(mesh, mat):
+    """Delete the faces of ``mesh`` that don't use ``mat`` (all faces when ``mat`` is None).
+    Shape keys, UVs and vertex groups survive (BMesh keeps them)."""
+    import bmesh
+    keep = {i for i, m in enumerate(mesh.materials) if mat is not None and m == mat}
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    gone = [f for f in bm.faces if f.material_index not in keep]
+    bmesh.ops.delete(bm, geom=gone, context="FACES")
+    loose = [v for v in bm.verts if not v.link_faces]
+    bmesh.ops.delete(bm, geom=loose, context="VERTS")
+    bm.to_mesh(mesh)
+    bm.free()
 
 
 def _set_inputs(mod, **values):
@@ -143,11 +247,10 @@ def _set_inputs(mod, **values):
 # Scene analysis
 # --------------------------------------------------------------------------
 
-def _glass_names(scene, settings):
-    names = set()
-    if settings.glass_collection is not None:
-        names |= {o.name_full for o in settings.glass_collection.all_objects}
-    return names
+def _glass_names(settings):
+    if settings.glass_collection is None:
+        return set()
+    return {o.name_full for o in settings.glass_collection.all_objects}
 
 
 def _role(obj, glass_names):
@@ -185,9 +288,11 @@ def _visible_objects(layer):
 
 
 def _instanced_materials(depsgraph, obj):
+    """Materials of Geometry Nodes / collection instances (not particles, handled separately)."""
     mats = set()
     for inst in depsgraph.object_instances:
-        if inst.is_instance and inst.parent is not None and inst.parent.original == obj:
+        if (inst.is_instance and inst.parent is not None and inst.parent.original == obj
+                and inst.particle_system is None):
             for slot in inst.instance_object.material_slots:
                 if slot.material is not None:
                     mats.add(slot.material.original)
@@ -195,12 +300,40 @@ def _instanced_materials(depsgraph, obj):
 
 
 def _object_materials(depsgraph, obj):
-    ev = obj.evaluated_get(depsgraph)
+    try:
+        ev = obj.evaluated_get(depsgraph)
+    except Exception:          # not part of this depsgraph (e.g. only instanced)
+        ev = obj
     mats = {s.material.original for s in ev.material_slots if s.material is not None}
     data = getattr(ev, "data", None)
     if data is not None and hasattr(data, "materials"):
         mats |= {m.original for m in data.materials if m is not None}
     return mats | _instanced_materials(depsgraph, obj)
+
+
+def _particle_systems(obj):
+    """[(index, particle system)] that render instances or strands."""
+    out = []
+    mods = {m.particle_system.name: m for m in obj.modifiers if m.type == "PARTICLE_SYSTEM"}
+    for i, ps in enumerate(obj.particle_systems):
+        m = mods.get(ps.name)
+        if m is None or not m.show_render:
+            continue
+        st = ps.settings
+        if st.render_type == "OBJECT" and st.instance_object is not None:
+            out.append((i, ps))
+        elif st.render_type == "COLLECTION" and st.instance_collection is not None:
+            out.append((i, ps))
+        elif st.render_type == "PATH":
+            out.append((i, ps))
+    return out
+
+
+def _shows_emitter(obj):
+    """An emitter mesh renders only with Object > Instancing > Show Instancer: Render on."""
+    if not any(m.type == "PARTICLE_SYSTEM" and m.show_render for m in obj.modifiers):
+        return True
+    return obj.show_instancer_for_render
 
 
 def analyse(context, scene, settings):
@@ -210,7 +343,15 @@ def analyse(context, scene, settings):
     if roots:
         raise BuildError("Objects directly in the Scene Collection can't be kept out of the ID layer: %s. "
                          "Use 'Move Root Objects' first." % ", ".join(o.name for o in roots[:6]))
-    glass_names = _glass_names(scene, settings)
+    if not settings.use_object and not settings.use_material:
+        raise BuildError("Tick Object and/or Material IDs.")
+    names = [n for _, n in requested_layers(settings)]
+    for n in names:
+        if not core.valid_layer_name(n):
+            raise BuildError("Cryptomatte layer name %r: use letters, digits and _ only." % n)
+    if len(set(names)) != len(names):
+        raise BuildError("The Object and Material layers need different names.")
+    glass_names = _glass_names(settings)
     scope = None
     if settings.scope == "COLLECTION":
         if settings.target_collection is None:
@@ -224,8 +365,6 @@ def analyse(context, scene, settings):
             continue
         if obj.type == "EMPTY" and not (obj.instance_type == "COLLECTION" and obj.instance_collection):
             continue
-        if any(m.type == "PARTICLE_SYSTEM" and m.show_render for m in obj.modifiers):
-            warnings.append("Particles on '%s' are not captured (convert them to Geometry Nodes instances)." % obj.name)
         if obj.instance_type in ("VERTS", "FACES") and obj.children:
             warnings.append("Vertex/face instancing on '%s' is not captured." % obj.name)
         role = _role(obj, glass_names)
@@ -248,15 +387,18 @@ def analyse(context, scene, settings):
 # Build / clear
 # --------------------------------------------------------------------------
 
-def _proxy(obj, name, collection):
-    if obj.type == "CURVES":
+def _new_data(kind, name):
+    if kind == "CURVES":
         data = bpy.data.hair_curves.new(name)
-    elif obj.type == "POINTCLOUD":
+    elif kind == "POINTCLOUD":
         data = bpy.data.pointclouds.new(name)
     else:
         data = bpy.data.meshes.new(name)
-    _tag(data)
-    p = _tag(bpy.data.objects.new(name, data))
+    return _tag(data)
+
+
+def _proxy(obj, name, collection):
+    p = _tag(bpy.data.objects.new(name, _new_data(obj.type, name)))
     p[SOURCE_PROP] = obj.name_full
     collection.objects.link(p)
     for f in VIS_FLAGS:
@@ -273,6 +415,17 @@ def _attach(p, group, **inputs):
     return m
 
 
+def _remove_data(data):
+    if data is None or not is_ours(data) or data.users:
+        return
+    if isinstance(data, bpy.types.Mesh):
+        bpy.data.meshes.remove(data)
+    elif isinstance(data, bpy.types.Curves):
+        bpy.data.hair_curves.remove(data)
+    elif isinstance(data, bpy.types.PointCloud):
+        bpy.data.pointclouds.remove(data)
+
+
 def clear(scene):
     removed = 0
     vl = id_layer(scene)
@@ -280,26 +433,17 @@ def clear(scene):
         vl.world_override = None   # removing the layer doesn't release this user
         scene.view_layers.remove(vl)
         removed += 1
-    coll = bpy.data.collections.get(PROXY_COLLECTION)
-    if coll is not None and is_ours(coll):
-        for o in list(coll.objects):
-            if is_ours(o):
-                data = o.data
-                bpy.data.objects.remove(o)
-                removed += 1
-                if data is not None and is_ours(data) and data.users == 0:
-                    if isinstance(data, bpy.types.Mesh):
-                        bpy.data.meshes.remove(data)
-                    elif isinstance(data, bpy.types.Curves):
-                        bpy.data.hair_curves.remove(data)
-                    elif isinstance(data, bpy.types.PointCloud):
-                        bpy.data.pointclouds.remove(data)
-        if coll.name in scene.collection.children:
-            scene.collection.children.unlink(coll)
-        if coll.users == 0:
-            bpy.data.collections.remove(coll)
+    # every tagged object: proxies, emitter copies and instance sources
+    for o in [o for o in bpy.data.objects if is_ours(o)]:
+        data = o.data
+        bpy.data.objects.remove(o)
+        removed += 1
+        _remove_data(data)
+    for c in [c for c in bpy.data.collections if is_ours(c)]:
+        bpy.data.collections.remove(c)
+        removed += 1
     # shared datablocks: only when nothing uses them any more (another built scene might)
-    for store in (bpy.data.node_groups, bpy.data.materials, bpy.data.worlds):
+    for store in (bpy.data.particles, bpy.data.node_groups, bpy.data.materials, bpy.data.worlds):
         for idb in list(store):
             if is_ours(idb) and idb.users == 0:
                 store.remove(idb)
@@ -307,15 +451,213 @@ def clear(scene):
     return removed
 
 
+class _Builder:
+    def __init__(self, scene, settings, depsgraph, vl, coll, sources):
+        self.s = settings
+        self.depsgraph = depsgraph
+        self.vl = vl
+        self.coll = coll
+        self.sources = sources
+        self.white = _emission_material("CR_emit_white", (1, 1, 1))
+        self.clear_mat = _transparent_material()
+        self.glass_names = _glass_names(settings)
+        self.warnings = []
+        self.entries = {}          # (object name, material name) -> group
+        self.glass_cache = {}
+        self.other = False
+        self.n = 0
+
+    # ---- helpers ----
+    def glass(self, mat):
+        g = self.glass_cache.get(mat)
+        if g is None:
+            g = self.glass_cache[mat] = is_glass(mat, self.s)
+        return g
+
+    def group(self, obj_name, mat):
+        """Light group for an (object, material) pair under the current ID settings."""
+        key = (obj_name if self.s.use_object else None,
+               mat.name_full if (mat is not None and self.s.use_material) else None)
+        if key == (None, None):
+            self.other = True
+            return core.OTHER_GROUP
+        g = self.entries.get(key)
+        if g is None:
+            g = self.entries[key] = "id_%04d" % (len(self.entries) + 1)
+            self.vl.lightgroups.add(name=g)
+        return g
+
+    def parts(self, obj, mats):
+        """How to build ``obj``: [(material or None, 'emit'|'keep')], None = the whole object."""
+        glass = {m for m in mats if self.glass(m)}
+        solid = sorted(set(mats) - glass, key=lambda m: m.name_full)
+        if not solid:
+            return [(None, "keep")] if mats else [(None, "emit")]
+        if not glass and (len(solid) == 1 or not self.s.use_material):
+            return [(solid[0] if len(solid) == 1 else None, "emit")]
+        return [(m, "emit") for m in solid] + [(m, "keep") for m in sorted(glass, key=lambda m: m.name_full)]
+
+    def proxy(self, obj, part, collection, label):
+        mat, how = part
+        p = _proxy(obj, label, collection)
+        if mat is None:
+            grp = _node_group("emit" if how == "emit" else "keep")
+            inputs = {"Source": obj, "Emit": self.white} if how == "emit" else {"Source": obj}
+        else:
+            grp = _node_group("matsel" if how == "emit" else "keepsel")
+            inputs = {"Source": obj, "Only": mat}
+            if how == "emit":
+                inputs["Emit"] = self.white
+        _attach(p, grp, **inputs)
+        p.lightgroup = self.group(obj.name_full, mat) if how == "emit" else ""
+        self.n += 1
+        return p
+
+    def source_copy(self, obj, part, label):
+        """Particle instance source: a duplicate of ``obj`` (same modifiers, transform and
+        animation) with an object-level emission override. Geometry Nodes proxies don't work here:
+        Blender doesn't evaluate them for objects that are only used by particles."""
+        c = _tag(obj.copy())
+        c.name = label
+        c[SOURCE_PROP] = obj.name_full
+        self.sources.objects.link(c)
+        c.hide_select = True
+        mat, how = part if part is not None else (None, "hide")
+        if (mat is not None or how == "hide") and c.type == "MESH":
+            # keep only this variant's faces; other variants draw the rest. Done on a mesh copy at
+            # build time: Blender doesn't evaluate modifiers we add to particle-only objects in
+            # final renders, so a Geometry Nodes split would silently do nothing.
+            c.data = _tag(c.data.copy())
+            _keep_faces(c.data, mat)
+        if how == "emit" or (how == "hide" and c.type != "MESH"):
+            if not c.material_slots and hasattr(c.data, "materials"):
+                if not is_ours(c.data):
+                    c.data = _tag(c.data.copy())   # needs a slot to override; the original stays untouched
+                c.data.materials.append(None)
+            for slot in c.material_slots:
+                slot.link = "OBJECT"
+                slot.material = self.white if how == "emit" else self.clear_mat
+        c.lightgroup = self.group(obj.name_full, mat) if how == "emit" else ""
+        self.n += 1
+        return c
+
+    # ---- objects ----
+    def target(self, obj, cam):
+        mats = sorted(_object_materials(self.depsgraph, obj), key=lambda m: m.name_full)
+        if _shows_emitter(obj):
+            for part in self.parts(obj, mats):
+                label = "CR_%s" % obj.name if part[0] is None else "CR_%s|%s" % (obj.name, part[0].name)
+                p = self.proxy(obj, part, self.coll, label)
+                p.visible_camera = p.visible_camera and cam
+        for index, ps in _particle_systems(obj):
+            self.particles(obj, cam, index, ps)
+
+    def other_object(self, obj, cam):
+        p = _proxy(obj, "CR_other_%s" % obj.name, self.coll)
+        _attach(p, _node_group("emit"), Source=obj, Emit=self.white)
+        p.visible_camera = p.visible_camera and cam
+        p.lightgroup = core.OTHER_GROUP
+        self.other = True
+
+    def glass_object(self, obj, cam):
+        p = _proxy(obj, "CR_glass_%s" % obj.name, self.coll)
+        _attach(p, _node_group("keep"), Source=obj)
+        p.visible_camera = p.visible_camera and cam
+
+    # ---- legacy particles ----
+    def _emitter_copy(self, obj, cam, index, label):
+        c = _tag(obj.copy())
+        c.name = label
+        c[SOURCE_PROP] = obj.name_full
+        self.coll.objects.link(c)
+        c.hide_select = True
+        c.lightgroup = ""
+        c.visible_camera = c.visible_camera and cam
+        mods = [m for m in c.modifiers if m.type == "PARTICLE_SYSTEM"]
+        for i, m in enumerate(mods):
+            m.show_render = m.show_viewport = (i == index)
+        ps = c.particle_systems[index]
+        st = _tag(ps.settings.copy())
+        ps.settings = st
+        c.show_instancer_for_render = False   # the emitter mesh has its own proxy
+        return c, st
+
+    def particles(self, obj, cam, index, ps):
+        st0 = ps.settings
+        base = "CR_ps_%s_%d" % (obj.name, index)
+        if st0.render_type == "PATH":
+            # strands render with the emitter's material slot st0.material (1-based)
+            idx = st0.material - 1
+            mat = obj.material_slots[idx].material if 0 <= idx < len(obj.material_slots) else None
+            if mat is not None and self.glass(mat):
+                return
+            if not obj.material_slots:
+                self.warnings.append("Hair strands on '%s' need a material slot to get an ID." % obj.name)
+                return
+            c, st = self._emitter_copy(obj, cam, index, base)
+            for slot in c.material_slots:      # object-level override on the copy only
+                slot.link = "OBJECT"
+                slot.material = self.white
+            c.lightgroup = self.group(obj.name_full, mat)
+            self.n += 1
+            return
+        if st0.render_type == "OBJECT":
+            members = [st0.instance_object]
+        else:
+            members = list(st0.instance_collection.all_objects)
+        plans = {}
+        for o in members:
+            role = _role(o, self.glass_names)
+            if role == "ignore":
+                plans[o] = []
+            elif role == "glass":
+                plans[o] = [(None, "keep")]
+            else:
+                plans[o] = self.parts(o, sorted(_object_materials(self.depsgraph, o), key=lambda m: m.name_full))
+        # one variant when nothing needs splitting, else one per material (+ whole objects)
+        if all(len(p) == 1 and (p[0][0] is None or p[0][1] == "emit") for p in plans.values()):
+            variants = [None]
+        else:
+            variants = sorted({part for p in plans.values() for part in p if part[0] is not None},
+                              key=lambda x: (x[0].name_full, x[1]))
+            if any(part[0] is None for p in plans.values() for part in p):
+                variants.append(None)
+        for vi, variant in enumerate(variants):
+            label = "%s_v%d" % (base, vi)
+            c, st = self._emitter_copy(obj, cam, index, label)
+            proxies = []
+            for o in members:
+                plan = plans[o]
+                if variant is None:
+                    part = plan[0] if len(plan) == 1 and (variants == [None] or plan[0][0] is None) else None
+                else:
+                    part = variant if variant in plan else None
+                # part None -> fully transparent copy: keeps member count/order for random picking
+                proxies.append(self.source_copy(o, part, "CR_src_%s_%s" % (o.name, label)))
+            if st0.render_type == "OBJECT":
+                st.instance_object = proxies[0]
+            else:
+                ic = _tag(bpy.data.collections.new("CR_src_%s" % label))
+                ic.instance_offset = st0.instance_collection.instance_offset
+                for p in proxies:
+                    ic.objects.link(p)
+                self.sources.children.link(ic)
+                st.instance_collection = ic
+
+
 def build(context, scene, settings):
     info = analyse(context, scene, settings)
-    if not hasattr(bpy.types.ViewLayer, "bl_rna") or "world_override" not in bpy.types.ViewLayer.bl_rna.properties:
+    if "world_override" not in bpy.types.ViewLayer.bl_rna.properties:
         raise BuildError("This Blender version has no per-view-layer world override (needs Blender 4.2+).")
     clear(scene)
     depsgraph = context.evaluated_depsgraph_get()
 
     coll = _tag(bpy.data.collections.new(PROXY_COLLECTION))
     scene.collection.children.link(coll)
+    # particle instance sources live in a collection that is NOT linked to the scene (like a
+    # typical instance library): only then does Blender evaluate their modifiers for the particles
+    sources = _tag(bpy.data.collections.new(SOURCES_COLLECTION))
+    sources.use_fake_user = True
     vl = _tag(scene.view_layers.new(core.ID_LAYER))
     for lc in vl.layer_collection.children:
         lc.exclude = lc.collection != coll
@@ -334,78 +676,50 @@ def build(context, scene, settings):
     vl.world_override = world
     vl.lightgroups.add(name=core.WORLD_GROUP)
     world.lightgroup = core.WORLD_GROUP
+    vl.lightgroups.add(name=core.OTHER_GROUP)
 
-    white = _emission_material("CR_emit_white", (1, 1, 1))
-    rgb = {c: _emission_material("CR_emit_" + c, col) for c, col in
-           (("R", (1, 0, 0)), ("G", (0, 1, 0)), ("B", (0, 0, 1)))}
-    g_emit, g_keep = _node_group("emit"), _node_group("keep")
-    g_matsel = _node_group("matsel") if settings.mode == "MATERIAL" else None
-
-    # units: (object, material or None, id name)
-    units = []
-    warnings = list(info["warnings"])
+    b = _Builder(scene, settings, depsgraph, vl, coll, sources)
     for obj, cam in info["targets"]:
-        if settings.mode == "MATERIAL":
-            mats = sorted(_object_materials(depsgraph, obj), key=lambda m: m.name_full)
-            if not mats:
-                warnings.append("'%s' has no material; left out of the material IDs." % obj.name)
-            for m in mats:
-                units.append((obj, cam, m, m.name_full))
-        else:
-            units.append((obj, cam, None, obj.name_full))
-
-    names = sorted({u[3] for u in units})
-    core.check_collisions(names)
-    group_of, channel_of = {}, {}
-    for i, n in enumerate(names):
-        if settings.packing == "RGB":
-            group_of[n], channel_of[n] = "id_%04d" % (i // 3 + 1), "RGB"[i % 3]
-        else:
-            group_of[n], channel_of[n] = "id_%04d" % (i + 1), "L"
-    for g in sorted(set(group_of.values())):
-        vl.lightgroups.add(name=g)
-
-    for obj, cam, mat, name in units:
-        label = "CR_%s" % obj.name if mat is None else "CR_%s|%s" % (obj.name, mat.name)
-        p = _proxy(obj, label, coll)
-        emit = white if channel_of[name] == "L" else rgb[channel_of[name]]
-        if mat is None:
-            _attach(p, g_emit, Source=obj, Emit=emit)
-        else:
-            _attach(p, g_matsel, Source=obj, Only=mat, Emit=emit)
-        p.visible_camera = p.visible_camera and cam
-        p.lightgroup = group_of[name]
-
-    extra = [core.WORLD_GROUP]
-    if info["others"]:
-        vl.lightgroups.add(name=core.OTHER_GROUP)
-        extra.append(core.OTHER_GROUP)
+        b.target(obj, cam)
     for obj, cam in info["others"]:
-        p = _proxy(obj, "CR_other_%s" % obj.name, coll)
-        _attach(p, g_emit, Source=obj, Emit=white)
-        p.visible_camera = p.visible_camera and cam
-        p.lightgroup = core.OTHER_GROUP
+        b.other_object(obj, cam)
     for obj, cam in info["glass"]:
-        p = _proxy(obj, "CR_glass_%s" % obj.name, coll)
-        _attach(p, g_keep, Source=obj)
-        p.visible_camera = p.visible_camera and cam
+        b.glass_object(obj, cam)
 
-    entries = [{"name": n, "group": group_of[n], "channel": channel_of[n]} for n in names]
-    man = core.make_manifest(settings.mode, settings.packing, entries, extra)
+    entries = [{"group": g, "object": k[0], "material": k[1]} for k, g in sorted(b.entries.items(), key=lambda x: x[1])]
+    if not entries:
+        clear(scene)
+        raise BuildError("Nothing gets an ID (everything is glass, or has no material in Material-only mode).")
+    layers = requested_layers(settings)
+    for kind, _ in layers:
+        try:
+            core.check_collisions(list(core.layer_names({"entries": entries}, kind)))
+        except ValueError as e:
+            clear(scene)
+            raise BuildError(str(e))
+    man = core.make_manifest(entries, [core.WORLD_GROUP, core.OTHER_GROUP], layers)
     man["settings"] = settings_signature(settings)
-    man["sources"] = sorted({o.name_full for o, _ in info["targets"] + info["glass"] + info["others"]})
+    man["sources"] = _sources(info)
+    man["glass_materials"] = sorted(m.name_full for m, g in b.glass_cache.items() if g)
     vl[MANIFEST_PROP] = json.dumps(man)
-    groups = len(set(group_of.values()))
+    warnings = list(info["warnings"]) + b.warnings
+    groups = len(entries)
     if groups > settings.group_warning:
         warnings.append("%d light groups: each is a full-resolution float pass; watch GPU memory "
-                        "(consider RGB packing or fewer targets)." % groups)
-    return {"ids": len(names), "groups": groups, "glass": len(info["glass"]),
-            "others": len(info["others"]), "warnings": warnings}
+                        "(use the Collection target to limit IDs)." % groups)
+    counts = {kind: len(core.layer_names(man, kind)) for kind, _ in layers}
+    return {"ids": counts, "groups": groups, "proxies": b.n, "glass": len(info["glass"]),
+            "glass_materials": man["glass_materials"], "others": len(info["others"]), "warnings": warnings}
+
+
+def _sources(info):
+    return sorted({o.name_full for o, _ in info["targets"] + info["glass"] + info["others"]})
 
 
 def settings_signature(s):
-    return [s.mode, s.packing, s.scope, s.target_collection.name_full if s.target_collection else "",
-            s.glass_collection.name_full if s.glass_collection else ""]
+    return [bool(s.use_object), bool(s.use_material), [n for _, n in requested_layers(s)], s.scope,
+            s.target_collection.name_full if s.target_collection else "",
+            s.glass_collection.name_full if s.glass_collection else "", bool(s.detect_glass)]
 
 
 def stale_reason(context, scene, settings):
@@ -419,8 +733,7 @@ def stale_reason(context, scene, settings):
         info = analyse(context, scene, settings)
     except BuildError as e:
         return str(e)
-    now = sorted({o.name_full for o, _ in info["targets"] + info["glass"] + info["others"]})
-    if now != man.get("sources"):
+    if _sources(info) != man.get("sources"):
         return "objects changed"
     vl = id_layer(scene)
     leaks = [lc.name for lc in vl.layer_collection.children if not lc.exclude and lc.name != PROXY_COLLECTION]
