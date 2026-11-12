@@ -32,15 +32,13 @@
 
 点击**构建**。
 
-<table>
-<tr><th>构建前</th><th>构建后</th></tr>
-<tr><td><img src="docs/images/ui_build_before.zh-CN.png" width="300" alt="构建前的面板"></td>
-<td><img src="docs/images/ui_build_after.zh-CN.png" width="300" alt="构建后的面板"></td></tr>
-</table>
+<img src="docs/images/ui_build_before.zh-CN.png" width="300" alt="构建前的面板">
+
+<img src="docs/images/view_layers.png" width="400" alt="Beauty 旁边的 ID_MATTES 视图层">
 
 这会添加一个**代理场景**：一个名为 `ID_MATTES` 的额外视图层，以及一个代理物体集合。CryptoRay 需要它来渲染遮罩。你自己的物体、材质和 Beauty 渲染都不会被改动。
 
-<img src="docs/images/view_layers.png" width="400" alt="Beauty 旁边的 ID_MATTES 视图层">
+<img src="docs/images/ui_build_after.zh-CN.png" width="300" alt="构建后的面板">
 
 之后如果添加了物体或更改了设置，面板会显示“已过期”：点击**重建**即可。
 
