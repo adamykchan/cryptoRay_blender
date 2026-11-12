@@ -685,10 +685,14 @@ def build(context, scene, settings):
     # Ignore Glass Reflections: nothing in the ID layer is visible to glossy (reflection) rays, so a
     # reflection on glass adds no light; refracted (transmission) rays still see everything
     world.cycles_visibility.glossy = not settings.ignore_reflections
+    lost = []
     if settings.ignore_reflections:
         for o in list(coll.objects) + list(sources.all_objects):
             if is_ours(o):
                 o.visible_glossy = False
+        _reflection_catcher(coll, b.white)
+        vl.lightgroups.add(name=core.LOST_GROUP)
+        lost = [core.LOST_GROUP]
 
     entries = [{"group": g, "object": k[0], "material": k[1]} for k, g in sorted(b.entries.items(), key=lambda x: x[1])]
     if not entries:
@@ -701,7 +705,9 @@ def build(context, scene, settings):
         except ValueError as e:
             clear(scene)
             raise BuildError(str(e))
-    man = core.make_manifest(entries, [core.WORLD_GROUP, core.OTHER_GROUP], layers)
+    # the background (world) is an ID too, in every layer
+    entries.append({"group": core.WORLD_GROUP, "object": core.BACKGROUND_ID, "material": core.BACKGROUND_ID})
+    man = core.make_manifest(entries, [core.OTHER_GROUP], layers, lost)
     man["settings"] = settings_signature(settings)
     man["sources"] = _sources(info)
     man["glass_materials"] = sorted(m.name_full for m, g in b.glass_cache.items() if g)
@@ -715,6 +721,26 @@ def build(context, scene, settings):
     counts = {kind: len(core.layer_names(man, kind)) for kind, _ in layers}
     return {"ids": counts, "groups": groups, "proxies": b.n, "glass": len(info["glass"]),
             "glass_materials": man["glass_materials"], "others": len(info["others"]), "warnings": warnings}
+
+
+def _reflection_catcher(coll, white):
+    """A huge sphere seen only by reflection rays: with everything else invisible to them, it measures
+    how much of each pixel's light comes from reflections on glass (light group LOST_GROUP)."""
+    import bmesh
+    me = _tag(bpy.data.meshes.new("CR_reflection_catcher"))
+    bm = bmesh.new()
+    bmesh.ops.create_icosphere(bm, subdivisions=3, radius=10000.0)
+    bm.to_mesh(me)
+    bm.free()
+    me.materials.append(white)
+    o = _tag(bpy.data.objects.new("CR_reflection_catcher", me))
+    coll.objects.link(o)
+    for f in VIS_FLAGS:
+        if hasattr(o, f):
+            setattr(o, f, f == "visible_glossy")
+    o.lightgroup = core.LOST_GROUP
+    o.hide_select = True
+    return o
 
 
 def _sources(info):

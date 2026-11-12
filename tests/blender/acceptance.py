@@ -125,6 +125,7 @@ def main():
               res["glass_materials"])
         check("bottle label gets IDs", "Bottle" in objs and "Label" in mats)
         check("particle instances named after the instanced object", "Cone" in objs, sorted(objs))
+        check("Background is an ID in both layers", core.BACKGROUND_ID in objs and core.BACKGROUND_ID in mats)
 
         raw, rmeta = read(os.path.join(out, "together_crypto_raw_0001.exr"))
         man = json.loads(rmeta[core.MANIFEST_ATTR])
@@ -135,13 +136,17 @@ def main():
         total = sum(lum(e["group"]) for e in man["entries"]) + sum(lum(g) for g in extra)
         bg_share = sum(lum(g) for g in extra)
         lit = total > 1e-4
+        # Ignore Glass Reflections fades pixels that are mostly reflection (see core.SOLID_UNTIL)
+        lost = sum(lum(g) for g in man.get("lost_groups", []) if "%s.Combined_%s.R" % (core.ID_LAYER, g) in raw)
+        share = np.where(total + lost > 1e-6, lost / np.maximum(total + lost, 1e-9), 0)
+        fade = np.clip((1 - share) / (1 - core.SOLID_UNTIL), 0, 1)
         for layer in (lo, lm):
             ranked = sum(b1["%s%02d.%s" % (layer, k // 2, "GA"[k % 2])] for k in range(s.ranks)
                          if "%s%02d.%s" % (layer, k // 2, "GA"[k % 2]) in b1)
             # material layer: objects without a material ID still count in the total, so <= 1
-            err = (ranked + np.where(lit, bg_share / np.maximum(total, 1e-9), 0) - 1)[lit]
+            err = (ranked + np.where(lit, bg_share / np.maximum(total, 1e-9), 0) * fade - fade)[lit]
             ok = float(np.abs(err).max()) <= 0.01 if layer == lo else float(err.max()) <= 0.01
-            check("%s coverage + background sums to 1 (±0.01)" % layer, ok,
+            check("%s coverage + background sums to 1, faded where only reflections (±0.01)" % layer, ok,
                   {"max_error": round(float(np.abs(err).max()), 5), "pixels": int(lit.sum())})
 
         h, w = total.shape
@@ -222,18 +227,22 @@ def main():
                 for flag in (True, False):
                     s.ignore_reflections = flag
                     refl[(tint_name, flag)] = ids_only("refl_%s_%s" % (tint_name, "on" if flag else "off"))
+            s.ignore_reflections, s.ignore_absorption = True, False
+            refl[("tinted", "absorption kept")] = ids_only("refl_tinted_raw")
         finally:
             glass_bsdf.default_value = tint0
-            s.ignore_reflections = True
+            s.ignore_reflections = s.ignore_absorption = True
         # Cube_C as seen through the ball: pixels the clear/on matte gives > 0.5, minus edge pixels
         mask = refl[("clear", True)] > 0.5
         mask[1:-1, 1:-1] &= mask[:-2, 1:-1] & mask[2:, 1:-1] & mask[1:-1, :-2] & mask[1:-1, 2:]
-        means = {"%s, ignore %s" % (k[0], "on" if k[1] else "off"): round(float(v[mask].mean()), 4)
-                 for k, v in refl.items()}
+        means = {"%s, ignore %s" % (k[0], "on" if k[1] else "off") if isinstance(k[1], bool) else "%s, %s" % k:
+                 round(float(v[mask].mean()), 4) for k, v in refl.items()}
         means["pixels"] = int(mask.sum())
         check("Ignore Glass Reflections: solid matte through clear and tinted glass (mean >= 0.99)",
               mask.sum() > 100 and means["clear, ignore on"] >= 0.99 and means["tinted, ignore on"] >= 0.99
               and means["tinted, ignore off"] < means["tinted, ignore on"], means)
+        check("Ignore Glass Absorption off: tinted glass weakens the matte",
+              means["tinted, absorption kept"] < 0.9, means["tinted, absorption kept"])
 
         # ---- Not Glass: the ball gets an ID ----
         glass_mat = bpy.data.materials["Glass"]

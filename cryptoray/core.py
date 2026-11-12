@@ -13,6 +13,9 @@ import time
 ID_LAYER = "ID_MATTES"          # view layer holding the ID light groups
 WORLD_GROUP = "id_world"        # background (world override) group, counts towards the total only
 OTHER_GROUP = "id_other"        # visible non-target objects, counts towards the total only
+BACKGROUND_ID = "Background"    # the world (WORLD_GROUP) is an ID in every layer
+LOST_GROUP = "id_lost"          # light that only reached the camera by reflecting off glass
+SOLID_UNTIL = 0.75              # Ignore Glass Reflections: pixels up to this lost share stay solid
 MANIFEST_ATTR = "cryptoray/manifest"
 LOSSY_EXR_CODECS = {"DWAA", "DWAB", "B44", "B44A", "PXR24"}
 
@@ -103,10 +106,10 @@ def group_channel(group, channel):
     return "%s.Combined_%s.%s" % (ID_LAYER, group, channel)
 
 
-def make_manifest(entries, extra_groups=(WORLD_GROUP,), layers=()):
+def make_manifest(entries, extra_groups=(WORLD_GROUP,), layers=(), lost_groups=()):
     """layers: [(kind, Cryptomatte layer name)], kind in LAYER_KINDS."""
     return {"version": 2, "layer": ID_LAYER, "entries": list(entries), "extra_groups": list(extra_groups),
-            "layers": [list(l) for l in layers]}
+            "layers": [list(l) for l in layers], "lost_groups": list(lost_groups)}
 
 
 def layer_names(manifest, kind):
@@ -359,6 +362,10 @@ def convert(src, manifest, layers=None, ranks=6, normalization="SUM", crypto_pat
         groups += [g for g in manifest.get("extra_groups", []) if group_channel(g, "R") in r.locate]
         for g in groups:
             total += _value(r, g).ravel()
+        lost = np.zeros(h * w, np.float32)
+        for g in manifest.get("lost_groups", []):
+            if group_channel(g, "R") in r.locate:
+                lost += _value(r, g).ravel()
         for kind, lname in layers:
             by_name = layer_names(manifest, kind)
             if not by_name:
@@ -369,11 +376,22 @@ def convert(src, manifest, layers=None, ranks=6, normalization="SUM", crypto_pat
     if not results:
         raise ValueError("None of the requested layers has IDs")
 
+    # Ignore Glass Reflections: reflected light is caught in LOST_GROUP. Normalizing by the rest makes
+    # the matte solid through the glass; where reflections dominate (glass rim, total internal
+    # reflection) it fades out, so those areas get soft, anti-aliased edges instead of hard ones.
+    fade = None
+    if normalization == "SUM" and lost.any():
+        with np.errstate(all="ignore"):
+            share = np.where(total + lost > 1e-6, lost / (total + lost), 0)
+        fade = np.clip((1 - share) / (1 - SOLID_UNTIL), 0, 1).astype(np.float32)
     for _, _, ids, weights in results:
         if normalization == "SUM":
             ok = total > 1e-6
             weights[:, ok] /= total[ok]
             weights[:, ~ok] = 0
+            if fade is not None:
+                weights *= fade
+                # one factor per pixel, so the ranks stay sorted
         elif normalization == "RAW":
             np.clip(weights, 0, 1, out=weights)
         else:

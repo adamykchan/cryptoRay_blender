@@ -119,6 +119,7 @@ class CRYPTORAY_PT_main(bpy.types.Panel):
                 r.label(text=m.name, icon="SHADING_RENDERED" if not m.cryptoray_not_glass else "SHADING_SOLID")
                 r.prop(m, "cryptoray_not_glass")
         box.prop(s, "ignore_reflections")
+        box.prop(s, "ignore_absorption")
         box.prop(s, "glass_collection")
 
         # ---- Output ----
@@ -126,24 +127,25 @@ class CRYPTORAY_PT_main(bpy.types.Panel):
         box.label(text="Output", icon="OUTPUT")
         box.prop(s, "embed")
         box.prop(s, "ranks")
-        box.prop(s, "normalization")
         box.prop(s, "matte_samples")
         box.prop(s, "keep_raw")
 
         # ---- Render ----
         box = body.box()
         box.label(text="Render Cryptomatte Only", icon="RENDER_STILL")
+        try:
+            naming = render.output_naming(scene)
+            path = render.side_file(naming, scene.frame_current)
+            shown = bpy.path.relpath(path) if bpy.data.filepath else path
+            box.label(text=shown.replace("\\", "/"), icon="FILE")
+        except RuntimeError as e:
+            box.label(text=str(e), icon="ERROR")
         row = box.row(align=True)
         row.enabled = built
         op = row.operator("cryptoray.render", text="Render Still", icon="RENDER_STILL")
         op.sequence = False
         op = row.operator("cryptoray.render", text="Render Animation", icon="RENDER_ANIMATION")
         op.sequence = True
-        try:
-            naming = render.output_naming(scene)
-            box.label(text="Writes " + bpy.path.basename(render.side_file(naming, scene.frame_current)))
-        except RuntimeError as e:
-            box.label(text=str(e), icon="ERROR")
         msg = render.STATUS.get(scene.name)
         if msg:
             for i in range(0, min(len(msg), 180), 60):

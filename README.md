@@ -30,11 +30,15 @@ removes exactly that.
 Object and material IDs come from the **same** render: each object/material pair gets one light group,
 an object's matte is the sum of its pairs, and a material's matte is the sum of its pairs across objects.
 
-Coverage is normalized per pixel: each value is divided by the sum of all IDs plus the background, so
-glass absorption and tint cancel out. With **Ignore Glass Reflections** (on by default) nothing in the ID
+The background (world) is an ID too, called `Background`, in every layer. With **Ignore Glass
+Absorption** (on by default) coverage is normalized per pixel: each value is divided by the light of all
+IDs together, so glass absorption and tint cancel out. With **Ignore Glass Reflections** (on by default) nothing in the ID
 layer is visible to reflection rays, so reflections on glass carry no IDs and an object seen through
 clear or tinted glass gets a solid matte (0.9996 mean coverage through the test ball, against 0.82 clear
-and 0.76 tinted with reflections included).
+and 0.76 tinted with reflections included). Where the camera sees almost only reflections (more than 75%
+of the light, e.g. total internal reflection near the top of a bottle, or a grazing rim), there is
+nothing behind the glass to show: those areas fade out to no ID with soft, anti-aliased edges. An
+invisible sphere seen only by reflection rays measures that share.
 IDs are stored as one coverage value per object rather than packed codes, so anti-aliased and blurred
 edges (rough glass, defocus) stay correct.
 
@@ -73,7 +77,7 @@ The panel is greyed out until the proxy scene is built:
    instead (render output `//render/shot_####` → `shot_crypto_0001.exr`). A plain F12 isn't saved to
    disk, so it produces no Cryptomatte yet.
 5. **Render Cryptomatte Only → Render Still / Render Animation** renders just the ID layer and writes
-   `<render name>_crypto_<frame>.exr`, for example when only the mattes need re-rendering or the beauty
+   `<render name>_crypto_<frame>.exr` (the path for the current frame is shown above the buttons), for example when only the mattes need re-rendering or the beauty
    output isn't a multilayer EXR. It first asks whether to rebuild the proxy scene (yes by default). Your
    beauty layer and output settings are switched back afterwards; the proxy scene stays until you delete it.
 
@@ -89,9 +93,9 @@ thread, where editing the scene is unsafe.
 | Detect Glass Materials | on | Off: only the Glass Collection and `matte_role` make glass |
 | Not Glass (per material) | off | Gives a detected glass material an ID |
 | Ignore Glass Reflections | on | Off: reflected objects also show up in the glass, as partial coverage |
+| Ignore Glass Absorption | on | Off: coverage is the light actually reaching the camera, so mattes are weaker through absorbing or tinted glass and needn't add up to 1 |
 | Embed in Beauty EXR | on | Off: separate `<render name>_crypto_<frame>.exr` with a colour-coded RGBA preview |
 | Levels | 6 | IDs stored per pixel (Cryptomatte depth) |
-| Coverage | Normalized | *Raw Energy* keeps the darkening from glass absorption instead |
 | Matte Samples | 0 (scene) | Sample count for the ID layer only. Raise it for very dark glass |
 | Keep Raw ID Passes | off | Also writes `<render name>_crypto_raw_<frame>.exr` with the light-group passes and the manifest in its header, plus `<render name>_crypto_manifest.json` |
 
@@ -113,8 +117,8 @@ as a matte.
 * **Volumes** aren't supported and are left out of the ID layer.
 * A collection-instance empty and Geometry Nodes instances get the **instancer's** name. Blender's own
   Cryptomatte names each instanced object instead.
-* Reflections in the glass also carry IDs, so a glass surface can show partial coverage of a reflected
-  object. This is physically correct, but worth knowing.
+* With Ignore Glass Reflections off, reflections in the glass carry IDs, so a glass surface shows partial
+  coverage of reflected objects.
 * Each light group is a full-resolution float buffer. Above 64 groups the panel warns; use the
   Collection target to reduce them. With both Object and Material on, multi-material objects need one
   group per material.

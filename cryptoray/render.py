@@ -107,7 +107,7 @@ def new_job(scene, ids_only=False, naming=None, restore=None):
         return None
     return {
         "scene": scene.name, "ids_only": ids_only, "manifest": man, "t0": time.time(),
-        "naming": naming or output_naming(scene), "ranks": s.ranks, "normalization": s.normalization,
+        "naming": naming or output_naming(scene), "ranks": s.ranks, "normalization": "SUM" if s.ignore_absorption else "RAW",
         "embed": s.embed and not ids_only, "keep_raw": s.keep_raw,
         "frames": [], "errors": [], "last": None, "restore": restore, "manifest_written": False,
     }
