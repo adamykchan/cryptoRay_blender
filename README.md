@@ -32,16 +32,14 @@ Picking the red cube (`Cube_L`), shown in orange:
 
 Click **Build**.
 
-<table>
-<tr><th>Before</th><th>After</th></tr>
-<tr><td><img src="docs/images/ui_build_before.png" width="300" alt="Panel before building"></td>
-<td><img src="docs/images/ui_build_after.png" width="300" alt="Panel after building"></td></tr>
-</table>
+<img src="docs/images/ui_build_before.png" width="300" alt="Panel before building">
+
+<img src="docs/images/view_layers.png" width="400" alt="The ID_MATTES view layer next to Beauty">
 
 This adds a **proxy scene**: an extra view layer called `ID_MATTES` and a collection of proxy objects.
 CryptoRay needs it to render the mattes. Your own objects, materials and beauty render are not changed.
 
-<img src="docs/images/view_layers.png" width="400" alt="The ID_MATTES view layer next to Beauty">
+<img src="docs/images/ui_build_after.png" width="300" alt="Panel after building">
 
 If you add objects or change settings later, the panel says *Out of date*: click **Rebuild**.
 
