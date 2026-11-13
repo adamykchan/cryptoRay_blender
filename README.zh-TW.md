@@ -48,6 +48,8 @@
 
 輸出格式必須是 **OpenEXR 多層**（Blender 5 中：**媒體類型**設為 **Multi-Layer EXR**），**編解碼器**為 **ZIP** 或 **PIZ**。
 
+<img src="docs/images/menu_render_animation.png" width="260" alt="渲染選單：算繪動畫 (Ctrl+F12)">
+
 按 **Ctrl+F12**（*渲染 › 算繪動畫*），或用命令列渲染。
 
 > [!WARNING]
