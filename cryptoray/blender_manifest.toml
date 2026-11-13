@@ -1,0 +1,28 @@
+schema_version = "1.0.0"
+
+id = "cryptoray"
+version = "0.5.0"
+name = "CryptoRay"
+tagline = "Cryptomatte for objects seen through refractive glass"
+maintainer = "adamykchan"
+type = "add-on"
+
+website = "https://github.com/adamykchan/cryptoRay_blender"
+
+tags = ["Render", "Compositing"]
+
+blender_version_min = "4.2.0"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+[permissions]
+files = "Read and write render output EXR files"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "/.git/",
+  "/*.zip",
+]
