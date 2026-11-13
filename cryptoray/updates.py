@@ -2,7 +2,8 @@
 
 Check-and-link only: nothing is downloaded or installed. Installs from extensions.blender.org are
 updated by Blender itself; everyone else gets a "Download" button that opens the release page.
-The check respects Blender's "Allow Online Access" preference and never runs in background mode.
+The check runs only when the user clicks the refresh button (never on its own), respects Blender's
+"Allow Online Access" preference and never runs in background mode.
 """
 import json
 import os
@@ -90,12 +91,6 @@ def start_check():
     bpy.app.timers.register(_redraw_when_done, first_interval=0.5)
 
 
-def _check_on_startup():
-    if _state["status"] == "idle":
-        start_check()
-    return None  # one-shot
-
-
 def draw(layout):
     here = _label(_local_version())
     status = _state["status"]
@@ -137,12 +132,9 @@ class CRYPTORAY_OT_check_update(bpy.types.Operator):
 
 def register():
     bpy.utils.register_class(CRYPTORAY_OT_check_update)
-    if online_allowed():
-        bpy.app.timers.register(_check_on_startup, first_interval=5.0)
 
 
 def unregister():
-    for t in (_check_on_startup, _redraw_when_done):
-        if bpy.app.timers.is_registered(t):
-            bpy.app.timers.unregister(t)
+    if bpy.app.timers.is_registered(_redraw_when_done):
+        bpy.app.timers.unregister(_redraw_when_done)
     bpy.utils.unregister_class(CRYPTORAY_OT_check_update)
