@@ -11,14 +11,14 @@ bl_info = {
 
 if "bpy" in locals():  # support "Reload Scripts"
     import importlib
-    for _m in (core, build, render, props, ops, ui, translations):  # noqa: F821
+    for _m in (core, build, render, props, ops, updates, ui, translations):  # noqa: F821
         importlib.reload(_m)
 
 import bpy  # noqa: E402
 
-from . import core, build, render, props, ops, ui, translations  # noqa: E402,F401
+from . import core, build, render, props, ops, updates, ui, translations  # noqa: E402,F401
 
-_modules = (translations, props, ops, ui, render)
+_modules = (translations, props, ops, updates, ui, render)
 
 
 def register():

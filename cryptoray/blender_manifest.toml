@@ -19,6 +19,7 @@ license = [
 
 [permissions]
 files = "Read and write render output EXR files"
+network = "Check GitHub for new CryptoRay releases"
 
 [build]
 paths_exclude_pattern = [

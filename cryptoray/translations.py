@@ -30,6 +30,20 @@ STRINGS = {
     "Render Cryptomatte Only": ("仅渲染 Cryptomatte", "僅渲染 Cryptomatte"),
     "Render Still": ("渲染静帧", "渲染靜態影格"),
     "Render Animation": ("渲染动画", "渲染動畫"),
+    "Help": ("帮助", "說明"),
+    # update check
+    "CryptoRay %s": ("CryptoRay %s", "CryptoRay %s"),
+    "CryptoRay %s · up to date": ("CryptoRay %s · 已是最新版本", "CryptoRay %s · 已是最新版本"),
+    "CryptoRay %s · checking for updates…": ("CryptoRay %s · 正在检查更新…", "CryptoRay %s · 正在檢查更新…"),
+    "CryptoRay %s · couldn't check for updates": ("CryptoRay %s · 无法检查更新", "CryptoRay %s · 無法檢查更新"),
+    "CryptoRay %s · online access is off": ("CryptoRay %s · 联网访问已关闭", "CryptoRay %s · 線上存取已關閉"),
+    "Update available: %s": ("有可用更新：%s", "有可用更新：%s"),
+    "Download": ("下载", "下載"),
+    "Check for Updates": ("检查更新", "檢查更新"),
+    "Check GitHub for a newer CryptoRay release": ("在 GitHub 上检查是否有更新的 CryptoRay 版本",
+                                                  "在 GitHub 上檢查是否有更新的 CryptoRay 版本"),
+    "Turn on Preferences > System > Network > Allow Online Access":
+        ("请开启 偏好设置 > 系统 > 网络 > 允许联网访问", "請開啟 偏好設定 > 系統 > 網路 > 允許線上存取"),
     # stale reasons
     "not built": ("未构建", "未建立"),
     "settings changed": ("设置已更改", "設定已變更"),
