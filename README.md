@@ -50,6 +50,8 @@ If you add objects or change settings later, the panel says *Out of date*: click
 The output format must be **OpenEXR Multilayer** (*Multi-Layer EXR* in Blender 5) with the **ZIP** or
 **PIZ** codec.
 
+<img src="docs/images/menu_render_animation.png" width="260" alt="Render menu: Render Animation (Ctrl+F12)">
+
 Press **Ctrl+F12** (*Render › Render Animation*), or render from the command line.
 
 > [!WARNING]
