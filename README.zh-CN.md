@@ -50,12 +50,12 @@
 
 按 **Ctrl+F12**（*渲染 › 渲染动画*），或用命令行渲染。
 
+> [!WARNING]
+> **F12（渲染图像）无效。** 它只显示渲染结果，不保存到磁盘，所以 CryptoRay 无法把它转换成 Cryptomatte。只渲染单帧时，请用 CryptoRay 面板中的**渲染静帧**（见[仅渲染 Cryptomatte](#仅渲染-cryptomatte)）。
+
 <img src="docs/images/nuke_layers.png" width="300" alt="Nuke 图层列表中的 CryptoRay 层">
 
 现在每一帧的 EXR 都包含 Cryptomatte 层 `CryptoRayObject`（勾选了材质时还有 `CryptoRayMaterial`）。在 Nuke 中读取 EXR，添加 **Cryptomatte** 节点，选择该层并拾取物体，包括玻璃后面的物体。
-
-**F12**（渲染图像）只显示渲染结果，不保存到磁盘，所以不会生成 Cryptomatte。
-
 ### 3. 删除
 
 <img src="docs/images/ui_delete.zh-CN.png" width="300" alt="删除按钮">

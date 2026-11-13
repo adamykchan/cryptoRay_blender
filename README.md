@@ -52,13 +52,16 @@ The output format must be **OpenEXR Multilayer** (*Multi-Layer EXR* in Blender 5
 
 Press **Ctrl+F12** (*Render › Render Animation*), or render from the command line.
 
+> [!WARNING]
+> **F12 (Render Image) WON'T WORK.** It only shows the render and doesn't save it, so CryptoRay can't
+> convert it to a Cryptomatte. For a single frame, use **Render Still** in the CryptoRay panel
+> (see [Render Cryptomatte Only](#render-cryptomatte-only)).
+
 <img src="docs/images/nuke_layers.png" width="300" alt="CryptoRay layers in Nuke's layer list">
 
 Each frame's EXR now contains the Cryptomatte layers `CryptoRayObject` (and `CryptoRayMaterial` if
 ticked). In Nuke, read the EXR, add a **Cryptomatte** node, choose the layer and pick objects, including
 the ones behind glass.
-
-**F12** (Render Image) only shows the render and doesn't save it, so it doesn't produce a Cryptomatte.
 
 ### 3. Delete
 
