@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CryptoRay",
     "author": "adamykchan",
-    "version": (0, 5, 0),
+    "version": (0, 5, 1),
     "blender": (4, 2, 0),
     "location": "3D View > Sidebar > CryptoRay",
     "description": "Cryptomatte for objects seen through refractive glass, via Cycles light groups",
