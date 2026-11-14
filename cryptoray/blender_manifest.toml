@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "cryptoray"
-version = "0.5.1"
+version = "0.5.2"
 name = "CryptoRay"
 tagline = "Cryptomatte for objects seen through refractive glass"
 maintainer = "adamykchan"
@@ -19,7 +19,6 @@ license = [
 
 [permissions]
 files = "Read and write render output EXR files"
-network = "Check GitHub for new CryptoRay releases"
 
 [build]
 paths_exclude_pattern = [
