@@ -1,7 +1,7 @@
 import bpy
 from bpy.app.translations import pgettext_iface as iface_
 
-from . import build, core, render, updates
+from . import build, core, render
 
 HELP_URL = "https://github.com/adamykchan/cryptoRay_blender"
 
@@ -161,7 +161,6 @@ class CRYPTORAY_PT_main(bpy.types.Panel):
                 lay.label(text=msg[i:i + 60], translate=False)
 
         lay.separator()
-        updates.draw(lay)
         lay.operator("wm.url_open", text="Help", icon="URL").url = HELP_URL
 
 
