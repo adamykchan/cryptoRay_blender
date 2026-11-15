@@ -68,7 +68,7 @@ class CryptoRaySettings(bpy.types.PropertyGroup):
         description="Optional: every material of the objects in here reflects IDs like chrome, detected or not. "
                     "Objects can also be tagged with the custom property matte_role = \"chrome\"")
     pure_chrome: BoolProperty(update=_rebuild,
-        name="Treat as Pure Chrome", default=False,
+        name="Treat as Pure Chrome", default=True,
         description="Chrome shows only what it reflects, never its own ID. Off: where chrome isn't fully "
                     "metal (Metallic below 1, rust in a texture, diffuse in a mix) the object's own ID shows, "
                     "in proportion")
