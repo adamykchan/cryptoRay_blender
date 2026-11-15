@@ -19,8 +19,8 @@ def _do_build(op, context):
     for w in res["warnings"]:
         op.report({"WARNING"}, w)
     ids = ", ".join("%d %s" % (n, k) for k, n in res["ids"].items())
-    render.STATUS[scene.name] = "Built: %s IDs in %d light groups; %d glass material(s)" % (
-        ids, res["groups"], len(res["glass_materials"]))
+    render.STATUS[scene.name] = "Built: %s IDs in %d light groups; %d glass, %d chrome material(s)" % (
+        ids, res["groups"], len(res["glass_materials"]), len(res["chrome_materials"]))
     return True
 
 
@@ -30,6 +30,15 @@ class CRYPTORAY_OT_build(bpy.types.Operator):
     bl_description = ("Create (or recreate) the Cryptomatte proxy scene and the ID_MATTES view layer. While "
                       "built, Ctrl+F12 and command-line renders also write the Cryptomatte. Nothing existing is edited")
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        # greyed out while the ID settings can't be built; the tooltip says why
+        problem = context.scene is not None and build.settings_problem(context.scene.cryptoray)
+        if problem:
+            cls.poll_message_set(problem)
+            return False
+        return True
 
     def execute(self, context):
         if bpy.app.is_job_running("RENDER"):
@@ -80,6 +89,9 @@ class CRYPTORAY_OT_render(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
+        if context.scene is not None and not build.requested_layers(context.scene.cryptoray):
+            cls.poll_message_set("Tick Object and/or Material IDs.")
+            return False
         return (context.scene is not None and build.id_layer(context.scene) is not None
                 and not bpy.app.is_job_running("RENDER") and render._JOB is None)
 

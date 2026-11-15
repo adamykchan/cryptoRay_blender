@@ -13,6 +13,7 @@ import time
 ID_LAYER = "ID_MATTES"          # view layer holding the ID light groups
 WORLD_GROUP = "id_world"        # background (world override) group, counts towards the total only
 OTHER_GROUP = "id_other"        # visible non-target objects, counts towards the total only
+CHROME_AOV = "cr_chrome"        # AOV of the ID layer: 1 where the camera sees chrome first
 BACKGROUND_ID = "Background"    # the world (WORLD_GROUP) is an ID in every layer
 LOST_GROUP = "id_lost"          # light that only reached the camera by reflecting off glass
 SOLID_UNTIL = 0.75              # Ignore Glass Reflections: pixels up to this lost share stay solid
@@ -366,6 +367,10 @@ def convert(src, manifest, layers=None, ranks=6, normalization="SUM", crypto_pat
         for g in manifest.get("lost_groups", []):
             if group_channel(g, "R") in r.locate:
                 lost += _value(r, g).ravel()
+        chrome = None
+        ch = next((c for c in r.locate if c.startswith("%s.%s." % (ID_LAYER, CHROME_AOV))), None)
+        if ch is not None:
+            chrome = np.clip(np.nan_to_num(r.channel(ch).ravel()), 0, 1).astype(np.float32)
         for kind, lname in layers:
             by_name = layer_names(manifest, kind)
             if not by_name:
@@ -393,6 +398,15 @@ def convert(src, manifest, layers=None, ranks=6, normalization="SUM", crypto_pat
                 weights *= fade
                 # one factor per pixel, so the ranks stay sorted
         elif normalization == "RAW":
+            if chrome is not None and chrome.any():
+                # where the camera sees chrome, coverage is always each ID's share: the glass settings
+                # don't touch the chrome matte (chrome that isn't fully metal doesn't add up to 1)
+                ok = total > 1e-6
+                share = np.zeros_like(weights)
+                share[:, ok] = weights[:, ok] / total[ok]
+                np.clip(weights, 0, 1, out=weights)
+                weights *= 1 - chrome
+                weights += share * chrome
             np.clip(weights, 0, 1, out=weights)
         else:
             raise ValueError("normalization must be SUM or RAW")

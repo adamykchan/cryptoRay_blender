@@ -15,7 +15,8 @@ def _stale(context):
     vl = build.id_layer(context.scene)
     key = (context.scene.name, len(bpy.data.objects), len(bpy.data.collections),
            repr(build.settings_signature(s)), vl.get(build.MANIFEST_PROP) if vl else None,
-           tuple(m.name for m in bpy.data.materials if getattr(m, "cryptoray_not_glass", False)))
+           tuple(m.name for m in bpy.data.materials if getattr(m, "cryptoray_not_glass", False)),
+           tuple(m.name for m in bpy.data.materials if getattr(m, "cryptoray_not_chrome", False)))
     if _cache["key"] != key:
         _cache["key"] = key
         try:
@@ -38,6 +39,22 @@ def _scene_materials(scene):
         _glass_cache["list"] = sorted(names)   # names, not references: those go stale on undo/reload
     mats = bpy.data.materials
     return [mats[n] for n in _glass_cache["list"] if n in mats]
+
+
+def _material_box(layout, mats, title, empty, prop, icon="MATERIAL"):
+    """Detected materials in their own box, one checkbox each (on = glass / chrome, off = own ID)."""
+    row = layout.row()
+    row.separator(factor=2.0)
+    inner = row.box().column(align=True)
+    inner.use_property_split = False
+    if not mats:
+        inner.label(text=empty)
+        return
+    inner.label(text=title)
+    for m in mats:
+        r = inner.row(align=True)
+        r.prop(m, prop, text="")
+        r.label(text=m.name, translate=False, icon=icon)
 
 
 class CRYPTORAY_PT_main(bpy.types.Panel):
@@ -66,6 +83,9 @@ class CRYPTORAY_PT_main(bpy.types.Panel):
         sub = row.row(align=True)
         sub.enabled = built
         sub.operator("cryptoray.clear", text="Delete", icon="TRASH")
+        row = box.row()
+        row.use_property_split = False
+        row.prop(s, "auto_update")
         if build.root_objects(scene):
             box.label(text="Objects sit directly in the Scene Collection", icon="ERROR")
             box.operator("cryptoray.move_root_objects", icon="OUTLINER_COLLECTION")
@@ -73,11 +93,19 @@ class CRYPTORAY_PT_main(bpy.types.Panel):
             man = build.manifest(scene) or {}
             ids = sum(len(core.layer_names(man, k)) for k, _ in man.get("layers", []))
             groups = len(man.get("entries", []))
-            box.label(text=iface_("Built: %d IDs, %d light groups") % (ids, groups), translate=False, icon="CHECKMARK")
+            if render.rebuilding(scene):
+                box.label(text="Rebuilding...", icon="STRIP_COLOR_03")     # yellow light: busy, not a problem
+            else:
+                box.label(text=iface_("Built: %d IDs, %d light groups") % (ids, groups), translate=False,
+                          icon="CHECKMARK")
             box.label(text="Ctrl+F12 renders beauty + Cryptomatte")
-            reason = _stale(context)
+            # an Auto Update about to run: no warning, so the panel doesn't jump for a moment
+            # (a settings problem is shown in the IDs box instead)
+            reason = None if render.rebuilding(scene) or build.settings_problem(s) else _stale(context)
             if reason:
-                box.label(text=iface_("Out of date: %s") % iface_(reason), translate=False, icon="ERROR")
+                warn = box.row()
+                warn.alert = True           # drawn red
+                warn.label(text=iface_("Out of date: %s") % iface_(reason), translate=False, icon="ERROR")
             if groups > s.group_warning:
                 box.label(text="Many light groups: watch GPU memory", icon="ERROR")
             if not render.is_multilayer(scene):
@@ -85,10 +113,14 @@ class CRYPTORAY_PT_main(bpy.types.Panel):
             elif render.lossy_codec(scene):
                 box.label(text="Lossy EXR codec: use ZIP/PIZ for clean mattes", icon="ERROR")
         else:
-            box.label(text="Not built. Build to enable the settings below.")
+            if build.settings_problem(s):
+                box.label(text="Fix the setting marked below, then Build.")
+            else:
+                box.label(text="Not built. Build to enable the settings below.")
 
         body = lay.column()
-        body.active = built          # dimmed until built; settings stay editable for the first build
+        # locked until built (Build works with any settings); editable when something must be fixed first
+        body.enabled = built or bool(build.settings_problem(s))
 
         # ---- IDs ----
         box = body.box()
@@ -103,6 +135,13 @@ class CRYPTORAY_PT_main(bpy.types.Panel):
         box.prop(s, "scope")
         if s.scope == "COLLECTION":
             box.prop(s, "target_collection")
+        problem = build.settings_problem(s)
+        if problem:
+            warn = box.row()
+            warn.alert = True
+            warn.label(text=problem, icon="ERROR")
+        elif not build.requested_layers(s):
+            box.label(text="No IDs ticked: renders write no Cryptomatte", icon="INFO")
 
         # ---- Glass ----
         box = body.box()
@@ -111,21 +150,29 @@ class CRYPTORAY_PT_main(bpy.types.Panel):
         row.use_property_split = False
         row.prop(s, "detect_glass")
         if s.detect_glass:
-            mats = [m for m in _scene_materials(scene) if build.detect_glass(m)]
-            col = box.column(align=True)
-            if not mats:
-                col.label(text="No glass materials found")
-            for m in mats:
-                r = col.row(align=True)
-                r.use_property_split = False
-                r.separator(factor=2.0)
-                r.label(text=m.name, translate=False, icon="SHADING_RENDERED" if not m.cryptoray_not_glass else "SHADING_SOLID")
-                r.prop(m, "cryptoray_not_glass")
+            _material_box(box, [m for m in _scene_materials(scene) if build.detect_glass(m)],
+                          "Detected glass materials", "No glass materials found", "cryptoray_use_glass")
         box.prop(s, "glass_collection")
         col = box.column()
         col.use_property_split = False      # checkboxes left-aligned so long labels aren't cut off
         col.prop(s, "ignore_reflections")
         col.prop(s, "ignore_absorption")
+
+        # ---- Chrome ----
+        box = body.box()
+        box.label(text="Chrome", icon="SHADING_RENDERED")
+        row = box.row()
+        row.use_property_split = False
+        row.prop(s, "detect_chrome")
+        if s.detect_chrome:
+            _material_box(box, [m for m in _scene_materials(scene)
+                                if build.detect_chrome(m) and not build.is_glass(m, s)],
+                          "Detected chrome materials", "No chrome materials found", "cryptoray_use_chrome",
+                          icon="SHADING_RENDERED")
+        box.prop(s, "chrome_collection")
+        col = box.column()
+        col.use_property_split = False
+        col.prop(s, "pure_chrome")
 
         # ---- Output ----
         box = body.box()

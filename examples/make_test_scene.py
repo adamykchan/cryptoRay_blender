@@ -8,9 +8,12 @@ Creates scene "CryptoRay_Test":
     Cube_R has two materials (red + blue) for the Material IDs
   * GlassBall in collection "Glass" (its material is detected as glass automatically)
   * Bottle: one object with a green-tinted glass body and a paper "Label" material
+  * ChromeBall (mirror metal, detected as chrome): what it reflects keeps its own IDs
+  * Can: one object with a chrome body and an orange painted "Paint" band (the band gets an ID)
   * Instancers: a collection instance, a Geometry Nodes scatter, a hair curves object, and a legacy
     hair particle system instancing cones
-  * Camera steps around the ball over 7 frames; in each, the ball fully covers one element
+  * Camera steps around the ball over 7 frames; in each, the ball fully covers one element.
+    Frames 8 and 9 are close-ups of the chrome ball and the can
   * Blender's own Cryptomatte passes are on in the Beauty layer, for comparison
   * Multilayer EXR output (32-bit ZIP) to //render/beauty_####.exr
 Set ROUGHNESS below to 0.3 for the rough-glass acceptance test, or N_EXTRA to add many cubes.
@@ -26,7 +29,10 @@ N_EXTRA = 0          # e.g. 47 -> 50 target objects for the stress test
 # one element (Cube_C stays behind it throughout). Measured on this scene.
 ORBIT = [(22.5, "Cube_L"), (60.0, "ConeInstance"), (138.75, "Hair"), (206.25, "Bottle"),
          (228.75, "ParticleEmitter"), (303.75, "ConeScatter"), (337.5, "Cube_R")]
-FRAMES = len(ORBIT)
+# Then two chrome shots: the camera stands just past the glass ball and looks outwards at the chrome
+# ball / the can, so they reflect the whole scene (glass ball, cubes, instancers) behind the camera
+CHROME_SHOTS = [(83.0, "ChromeBall"), (284.0, "Can")]
+FRAMES = len(ORBIT) + len(CHROME_SHOTS)
 SAMPLES = 256
 SCENE = "CryptoRay_Test"
 
@@ -42,11 +48,15 @@ def _fcurves(obj):
         return list(act.fcurves)
 
 
-def material(name, color=None, glass=False, rough=0.0, tint=(1, 1, 1)):
+def material(name, color=None, glass=False, rough=0.0, tint=(1, 1, 1), chrome=False):
     m = bpy.data.materials.get(name) or bpy.data.materials.new(name)
     m.use_nodes = True
-    b = m.node_tree.nodes.get("Principled BSDF")
-    if glass:
+    b = next(n for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    if chrome:
+        b.inputs["Base Color"].default_value = (0.9, 0.9, 0.92, 1)
+        b.inputs["Metallic"].default_value = 1.0
+        b.inputs["Roughness"].default_value = 0.03
+    elif glass:
         b.inputs["Base Color"].default_value = (*tint, 1)
         b.inputs["Transmission Weight"].default_value = 1.0
         b.inputs["IOR"].default_value = 1.45
@@ -122,7 +132,7 @@ def main():
 
     mesh_object("Cube_L", cube, props, (-1.3, 3, 0), [red])
     cc = mesh_object("Cube_C", cube, props, (0, 3.5, -0.8), [green])
-    for f, z in ((1, -0.8), (FRAMES, 0.8)):              # rises over the shot
+    for f, z in ((1, -0.8), (len(ORBIT), 0.8)):          # rises over the orbit
         cc.location.z = z
         cc.keyframe_insert("location", index=2, frame=f)
     cr = mesh_object("Cube_R", cube, props, (1.3, 3, 0), [red, blue])
@@ -145,6 +155,23 @@ def main():
         p.use_smooth = True
         p.material_index = 1 if abs(p.center.z) < 0.13 else 0
 
+    # chrome: a mirror ball, and a can with a chrome body and a painted band (split like the bottle)
+    chrome = material("Chrome", chrome=True)
+    cb = mesh_object("ChromeBall", lambda bm: bmesh.ops.create_uvsphere(bm, u_segments=64, v_segments=32, radius=0.53),
+                     props, (-3.4, 0.2, -1.07), [chrome])     # placed to hide as little as possible
+    for p in cb.data.polygons:
+        p.use_smooth = True
+    def can_mesh(bm):
+        bmesh.ops.create_cone(bm, cap_ends=True, segments=48, radius1=0.3, radius2=0.3, depth=1.0)
+        for z in (-0.17, 0.17):                          # cut the sides into three bands
+            bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:], plane_co=(0, 0, z),
+                                   plane_no=(0, 0, 1))
+    can = mesh_object("Can", can_mesh,
+                      props, (3.4, 0.6, -1.1), [chrome, material("Paint", (0.9, 0.35, 0.05))])
+    for p in can.data.polygons:
+        p.use_smooth = len(p.vertices) == 4            # smooth sides, flat caps
+        p.material_index = 1 if len(p.vertices) == 4 and abs(p.center.z) < 0.17 else 0
+
     ld = bpy.data.lights.new("Key", "AREA")
     ld.energy, ld.size = 400, 3
     lo = bpy.data.objects.new("Key", ld)
@@ -165,12 +192,20 @@ def main():
     co.location, co.rotation_euler = (0, -6.5, 0.4), (math.radians(88), 0, 0)
     rig = bpy.data.objects.new("CamOrbit", None)         # camera orbits the ball once
     co.parent = rig
-    for f, (angle, _) in enumerate(ORBIT, start=1):
+    for f, (angle, _) in enumerate(ORBIT + CHROME_SHOTS, start=1):
         rig.rotation_euler.z = math.radians(angle)
         rig.keyframe_insert("rotation_euler", index=2, frame=f)
     for fc in _fcurves(rig):
         for kp in fc.keyframe_points:
             kp.interpolation = "LINEAR"
+    for f, y, z, tilt in ((len(ORBIT), -6.5, 0.4, 88), (len(ORBIT) + 1, 1.8, -0.6, 80)):
+        co.location.y, co.location.z = y, z
+        co.rotation_euler.x = math.radians(tilt)
+        co.keyframe_insert("location", frame=f)
+        co.keyframe_insert("rotation_euler", index=0, frame=f)
+    for fc in _fcurves(co):
+        for kp in fc.keyframe_points:
+            kp.interpolation = "CONSTANT"
     cam.objects.link(rig)
     cam.objects.link(co)
     sc.camera = co
@@ -217,7 +252,7 @@ def main():
     ps.settings.type, ps.settings.count = "HAIR", 8
     ps.settings.render_type, ps.settings.instance_object = "OBJECT", cone
     ps.settings.particle_size = 0.5
-    # glass is found by material (GlassBall, Bottle body); no Glass collection needed
+    # glass and chrome are found by material; no Glass collection or matte_role needed
     sc.frame_set(1)
     return sc
 

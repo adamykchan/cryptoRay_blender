@@ -41,7 +41,7 @@ CryptoRay needs it to render the mattes. Your own objects, materials and beauty 
 
 <img src="docs/images/ui_build_after.png" width="300" alt="Panel after building">
 
-If you add objects or change settings later, the panel says *Out of date*: click **Rebuild**.
+With **Auto Update** on (the default), changing a setting in the panel or a material checkbox rebuilds the proxy scene by itself a moment later. If you add objects later, or with Auto Update off, the panel says *Out of date*: click **Rebuild**.
 
 ### 2. Render the animation as usual
 
@@ -94,8 +94,9 @@ When you're done, click **Delete**. It removes everything CryptoRay added. Rende
   Refraction BSDF, or Principled BSDF with Transmission) is listed here. Glass keeps its real shader so it
   bends the mattes, and gets no ID itself. An object with both glass and other materials (a bottle with a
   paper label) is split: the label gets an ID, the glass refracts.
-* **Not Glass:** tick it to treat that material as a normal surface instead of glass. It gets its own ID in
-  the Cryptomatte, and the mattes no longer show what's behind it.
+* **Detected glass materials:** every detected material is listed in its own box with a checkbox, ticked
+  by default. Untick one to treat it as a normal surface instead of glass: it gets its own ID in the
+  Cryptomatte, and the mattes no longer show what's behind it.
 * **Glass Collection:** optional. Whole objects in this collection are treated as glass.
 * **Ignore Glass Reflections** (on by default): reflections on glass don't carry IDs, so whatever is behind
   the glass gets a solid matte. Turn it off and reflected objects show up in the glass too, mixed into the
@@ -131,13 +132,32 @@ When you're done, click **Delete**. It removes everything CryptoRay added. Rende
 *Ignore Glass Absorption: frame 1 with the glass tinted blue, each colour one ID, the red cube picked in
 yellow.*
 
-Per object, you can also add the custom property `matte_role`: `"glass"` (treat as glass), `"ignore"`
-(leave it out completely) or `"other"` (hides what's behind it but gets no ID).
+### Chrome
+
+* **Detect Chrome Materials** (on by default): finds metal by its material: a Glossy, Anisotropic or
+  Metallic BSDF, or a Principled BSDF with Metallic above 0 or driven by a texture, also inside mixed shaders
+  and node groups. Whatever chrome reflects keeps its own ID, just like objects seen through glass. The ID
+  layer uses the chrome's own shader, so rough metal blurs the reflected IDs the same way it blurs the
+  reflection in the beauty. A car's chrome trim is split from the paint the same way a bottle's label is
+  split from the glass.
+* **Chrome Collection:** optional. Every material of the objects in this collection reflects IDs like
+  chrome, detected or not (Glass Collection wins if an object is in both).
+* **Treat as Pure Chrome** (off by default): where the material isn't fully metal (Metallic below 1, rust
+  in a texture, diffuse in a mix), the object's own ID shows in proportion: rusty metal shows reflections
+  where it's metal and its own ID where it's rust. Turn it on to show only the reflections, as if the
+  material were pure chrome.
+* **Detected chrome materials:** listed the same way, ticked by default. Untick one to give that material
+  its own, solid ID instead. Useful for very rough metal, whose reflections are only a smear, or for car
+  paint with a glossy coat if you'd rather pick the car.
+* The glass settings never change the chrome matte: chrome keeps its reflections either way, and glass seen in chrome always looks the same, whatever **Ignore Glass Reflections** and **Ignore Glass Absorption** are set to.
+
+Per object, you can also add the custom property `matte_role`: `"glass"` (treat as glass), `"chrome"`
+(treat as chrome), `"ignore"` (leave it out completely) or `"other"` (hides what's behind it but gets no ID).
 
 <img src="docs/images/ui_matte_role.png" width="374" alt="Custom property matte_role set to glass">
 
 *Object Properties › Custom Properties: click New, name it `matte_role`, set its type to String and its
-value to `glass`, `ignore` or `other`.*
+value to `glass`, `chrome`, `ignore` or `other`.*
 
 ### Output
 
@@ -191,10 +211,21 @@ material. Emitter particles are re-simulated in the copy, so bake them if the ma
 **From light to coverage.** After each frame, CryptoRay reads the light groups and, for every pixel,
 divides each one by the total of all of them. That gives each object's share of the pixel. The world is
 an ID too (`Background`), so the shares always add up to 1. Dividing by the total also cancels out glass
-tint and absorption (**Ignore Glass Absorption**). Reflection rays don't see the glowing proxies
-(**Ignore Glass Reflections**), so reflections can't leak other IDs in. Where the camera sees almost only
-reflection, such as total internal reflection at a bottle's edge, there's nothing behind the glass to
-show, and the matte fades out softly.
+tint and absorption (**Ignore Glass Absorption**). With **Ignore Glass Reflections**, the ID layer gives
+glass a copy of its material without the reflection: a Principled glass becomes its non-glass part mixed
+with a Refraction BSDF (same colour, roughness, IOR and normal), and a Glass BSDF becomes a Refraction BSDF.
+Light bends exactly as before, but nothing reflects, outside or inside the glass, so no other IDs leak in.
+Where the camera sees only reflection, such as total internal reflection at a bottle's edge, no light
+comes through and the matte is empty there.
+
+**Chrome.** In the ID layer, chrome keeps its shader, through a copy of its material: metal reflects the
+glowing proxies, so the reflections carry their IDs. What doesn't reflect (Principled's non-metal part,
+Diffuse and similar BSDFs in a mix) glows white in the object's own light group, weighted the same way, or
+is black with Treat as Pure Chrome. Nothing in the ID layer is visible to diffuse rays, so light bouncing off the
+non-metal part can't pick up the IDs of nearby objects.
+
+**Material copies.** The glass and chrome copies are made at Build, and made again from the current
+materials each time a CryptoRay render starts, so later material edits reach the ID layer.
 
 **Writing the Cryptomatte.** For every pixel, the strongest IDs (6 by default) are stored with their
 coverage, the names are hashed as the [Cryptomatte specification](https://github.com/Psyop/Cryptomatte)
@@ -224,7 +255,8 @@ come from one render.
 
 [`examples/cryptoray_test_scene.blend`](examples/cryptoray_test_scene.blend) has cubes behind a glass
 ball, a tinted bottle with a label, and instancing and particle cases, over 7 frames (in each frame one
-element is fully behind the ball). Blender's own Cryptomatte is on too, for comparison. Save it somewhere
+element is fully behind the ball). Frames 8 and 9 are close-ups of a chrome ball and a can with a chrome body
+and a painted band, reflecting the rest of the scene. Blender's own Cryptomatte is on too, for comparison. Save it somewhere
 before rendering (the output path is relative to the .blend).
 [`examples/make_test_scene.py`](examples/make_test_scene.py) builds the same scene from scratch:
 `blender --python examples/make_test_scene.py`.
