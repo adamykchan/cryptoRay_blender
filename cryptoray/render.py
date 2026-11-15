@@ -116,6 +116,8 @@ def new_job(scene, ids_only=False, naming=None, restore=None):
 def begin(job):
     global _JOB
     _JOB = job
+    if job is not None:
+        build.refresh_copies()     # glass/chrome edits since the build reach the ID layer
 
 
 # --------------------------------------------------------------------------
@@ -248,9 +250,140 @@ def on_load_pre(*_):
     _run_restore()
 
 
+# --------------------------------------------------------------------------
+# keep the ID-layer copies of glass/chrome materials in step with the originals
+# --------------------------------------------------------------------------
+
+_PENDING = set()       # names of edited original materials waiting for a refresh
+_SYNC_DELAY = 0.3      # seconds: a slider drag becomes one refresh
+
+
+def _sync_copies():
+    if bpy.app.is_job_running("RENDER"):
+        return 0.5                    # never touch materials while a render runs; try again later
+    names = set(_PENDING)
+    _PENDING.clear()
+    try:
+        build.refresh_copies(names)
+    except Exception:
+        traceback.print_exc()
+    return None
+
+
+@persistent
+def on_depsgraph_update(scene, depsgraph):
+    if not depsgraph.id_type_updated("MATERIAL") and not depsgraph.id_type_updated("NODETREE"):
+        return
+    sources = build.copy_sources()
+    if not sources:
+        return
+    hit = set()
+    for u in depsgraph.updates:
+        idb = getattr(u.id, "original", u.id)
+        if build.is_ours(idb):
+            continue
+        if isinstance(idb, bpy.types.Material) and idb.name_full in sources:
+            hit.add(idb.name_full)
+        elif isinstance(idb, bpy.types.ShaderNodeTree) and not idb.is_embedded_data:
+            # a shared node group: can't tell which material uses it, refresh them all. (A material's
+            # own node tree is embedded: its edits also update the material, handled above; skipping
+            # embedded trees also keeps our copies' trees from triggering another refresh.)
+            hit |= sources
+    if hit:
+        _PENDING.update(hit)
+        # restart the countdown on every edit, so a drag refreshes once, after it stops
+        if bpy.app.timers.is_registered(_sync_copies):
+            bpy.app.timers.unregister(_sync_copies)
+        bpy.app.timers.register(_sync_copies, first_interval=_SYNC_DELAY)
+
+
+# --------------------------------------------------------------------------
+# Auto Update: rebuild the proxy scene shortly after a panel setting changes
+# --------------------------------------------------------------------------
+
+_AUTO = set()          # names of scenes waiting for an automatic rebuild
+_AUTO_DELAY = 0.3
+_SHOWN = [False]       # the panel has drawn "Rebuilding..." since the timer fired
+
+
+def rebuilding(scene):
+    """An Auto Update is waiting or running for ``scene`` (the panel says Rebuilding...)."""
+    return scene.name in _AUTO
+
+
+def request_rebuild(scene):
+    """Rebuild ``scene``'s ID layer soon (after the last of a burst of edits) if Auto Update is on and
+    it is built. Interactive sessions only: background scripts call build() themselves."""
+    if bpy.app.background or scene is None or not scene.cryptoray.auto_update or build.id_layer(scene) is None:
+        return
+    if build.settings_problem(scene.cryptoray):
+        return                        # the panel shows the problem; rebuild once it's fixed
+    _AUTO.add(scene.name)
+    if bpy.app.timers.is_registered(_auto_rebuild):
+        bpy.app.timers.unregister(_auto_rebuild)
+    bpy.app.timers.register(_auto_rebuild, first_interval=_AUTO_DELAY)
+
+
+def rebuild_if_stale(context, scene):
+    """Rebuild when the built layer no longer matches the scene/settings, keeping any window that showed
+    the ID layer on it. Returns the build result, or None when nothing was needed."""
+    if build.id_layer(scene) is None or not build.stale_reason(context, scene, scene.cryptoray):
+        return None
+    wm = bpy.context.window_manager
+    on_ids = [w for w in (wm.windows if wm else []) if w.scene == scene and build.is_ours(w.view_layer)]
+    leave_id_layer(scene)
+    try:
+        res = build.build(context, scene, scene.cryptoray)
+    except build.BuildError as e:
+        _set_status(scene.name, "Auto Update failed: %s" % e)
+        return None
+    vl = build.id_layer(scene)
+    for w in on_ids:
+        w.view_layer = vl
+    ids = ", ".join("%d %s" % (n, k) for k, n in res["ids"].items())
+    _set_status(scene.name, "Auto Update: %s IDs in %d light groups" % (ids, res["groups"]))
+    return res
+
+
+def _auto_rebuild():
+    if bpy.app.is_job_running("RENDER") or _JOB is not None:
+        return 0.5                    # never rebuild during a render; try again later
+    if not _SHOWN[0]:
+        # let the panel draw "Rebuilding..." first: Blender can't redraw while the build runs
+        _SHOWN[0] = True
+        _redraw()
+        return 0.05
+    _SHOWN[0] = False
+    names = set(_AUTO)
+    wm = bpy.context.window_manager
+    for name in names:
+        scene = bpy.data.scenes.get(name)
+        if scene is None or not wm or not wm.windows:
+            continue
+        win = next((w for w in wm.windows if w.scene == scene), wm.windows[0])
+        vl = win.view_layer if win.scene == scene and not build.is_ours(win.view_layer) else build.beauty_layers(scene)[0]
+        try:
+            with bpy.context.temp_override(window=win, scene=scene, view_layer=vl):
+                rebuild_if_stale(bpy.context, scene)
+        except Exception:
+            traceback.print_exc()
+    _AUTO.difference_update(names)
+    _redraw()
+    return None
+
+
+@persistent
+def on_undo_redo(scene, *_):
+    # undo/redo can bring back a setting the current build doesn't match
+    man = build.manifest(scene) if scene is not None else None
+    if man is not None and man.get("settings") != build.settings_signature(scene.cryptoray):
+        request_rebuild(scene)
+
+
 HANDLERS = (("render_init", on_render_init), ("render_write", on_render_write),
             ("render_complete", on_render_complete), ("render_cancel", on_render_cancel),
-            ("load_pre", on_load_pre))
+            ("load_pre", on_load_pre), ("depsgraph_update_post", on_depsgraph_update),
+            ("undo_post", on_undo_redo), ("redo_post", on_undo_redo))
 
 
 def register():
@@ -265,3 +398,9 @@ def unregister():
         lst = getattr(bpy.app.handlers, name)
         if fn in lst:
             lst.remove(fn)
+    for t in (_sync_copies, _auto_rebuild):
+        if bpy.app.timers.is_registered(t):
+            bpy.app.timers.unregister(t)
+    _PENDING.clear()
+    _AUTO.clear()
+    _SHOWN[0] = False

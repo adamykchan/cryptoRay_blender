@@ -5,8 +5,11 @@ Nothing that already exists in the scene is edited. Build only ADDS:
   * collection ``ID_MATTES_proxies`` (excluded from every other view layer),
   * proxy objects: an empty mesh/curves/point-cloud object whose Geometry Nodes modifier reads the
     original through Object Info (so animation, deformation and modifiers follow live) and assigns
-    a white emission material. Glass keeps its real materials. Objects mixing glass and other
-    materials are split per material, so a bottle's label gets an ID while the glass refracts,
+    a white emission material. Glass and chrome keep their shaders, through ID-layer copies of
+    their materials: glass without its reflection (Ignore Glass Reflections), chrome with the
+    non-metal parts emitting the object's own ID (or nothing, with Treat as Pure Chrome). Objects mixing
+    glass/chrome and other materials are split per material, so a bottle's label gets an ID while
+    the glass refracts,
   * for legacy particle systems: a copy of the emitter whose particles instance proxies of the
     instanced objects (same seed and settings, so the same particles),
   * the emission material, the ID world and the node groups.
@@ -30,6 +33,13 @@ RENDERABLE = {"MESH", "CURVE", "SURFACE", "FONT", "META", "CURVES", "POINTCLOUD"
 VIS_FLAGS = ("visible_camera", "visible_diffuse", "visible_glossy", "visible_transmission",
              "visible_volume_scatter", "visible_shadow")
 GLASS_NODES = {"ShaderNodeBsdfGlass", "ShaderNodeBsdfRefraction"}
+MIRROR_NODES = {"ShaderNodeBsdfGlossy", "ShaderNodeBsdfAnisotropic", "ShaderNodeBsdfMetallic"}
+# shader nodes that don't reflect: in a chrome copy they emit the object's own ID instead
+MATTE_NODES = {"ShaderNodeBsdfDiffuse", "ShaderNodeSubsurfaceScattering", "ShaderNodeBsdfToon",
+               "ShaderNodeBsdfSheen", "ShaderNodeBsdfTranslucent"}
+COPY_PROP = "cryptoray_copy_of"     # on ID-layer material copies: name of the original
+KIND_PROP = "cryptoray_copy_kind"   # "glass" (no reflection), "glass_refl" (Ignore Glass Reflections off),
+                                    # "chrome" (own ID) or "mirror" (Treat as Pure Chrome)
 
 
 class BuildError(Exception):
@@ -75,24 +85,20 @@ def requested_layers(settings):
 # Glass materials
 # --------------------------------------------------------------------------
 
-def _transmissive(tree, starts, seen):
+def _find(tree, starts, seen, test):
+    """True when ``test(node)`` holds for a node feeding ``starts`` (node groups followed)."""
     stack, visited = list(starts), set()
     while stack:
         n = stack.pop()
         if n.as_pointer() in visited or n.mute:
             continue
         visited.add(n.as_pointer())
-        if n.bl_idname in GLASS_NODES:
+        if test(n):
             return True
-        if n.bl_idname == "ShaderNodeBsdfPrincipled":
-            for key in ("Transmission Weight", "Transmission"):
-                s = n.inputs.get(key)
-                if s is not None and (s.is_linked or s.default_value > 0):
-                    return True
         if n.bl_idname == "ShaderNodeGroup" and n.node_tree is not None and n.node_tree not in seen:
             seen.add(n.node_tree)
             outs = [x for x in n.node_tree.nodes if x.bl_idname == "NodeGroupOutput"]
-            if _transmissive(n.node_tree, outs, seen):
+            if _find(n.node_tree, outs, seen, test):
                 return True
         for s in n.inputs:
             for link in s.links:
@@ -101,12 +107,10 @@ def _transmissive(tree, starts, seen):
     return False
 
 
-def detect_glass(mat):
-    """True when the material's surface shader refracts (Glass / Refraction BSDF, or Principled
-    with Transmission above 0 or driven by a texture). Node groups are followed."""
+def _surface_starts(mat):
     tree = getattr(mat, "node_tree", None)
     if tree is None:
-        return False
+        return None, []
     outs = [n for n in tree.nodes if n.bl_idname == "ShaderNodeOutputMaterial"]
     active = [n for n in outs if n.is_active_output and n.target in ("ALL", "CYCLES")]
     starts = []
@@ -114,12 +118,52 @@ def detect_glass(mat):
         s = n.inputs.get("Surface")
         if s is not None:
             starts += [l.from_node for l in s.links if not l.is_muted]
-    return _transmissive(tree, starts, set())
+    return tree, starts
+
+
+def _input_on(node, *keys):
+    """The first existing input among ``keys`` is driven by a link or above 0."""
+    for key in keys:
+        s = node.inputs.get(key)
+        if s is not None:
+            return s.is_linked or s.default_value > 0
+    return False
+
+
+def _refracts(n):
+    return n.bl_idname in GLASS_NODES or (
+        n.bl_idname == "ShaderNodeBsdfPrincipled" and _input_on(n, "Transmission Weight", "Transmission"))
+
+
+def _metal(n):
+    return n.bl_idname in MIRROR_NODES or (
+        n.bl_idname == "ShaderNodeBsdfPrincipled" and _input_on(n, "Metallic"))
+
+
+def detect_glass(mat):
+    """True when the material's surface shader refracts (Glass / Refraction BSDF, or Principled
+    with Transmission above 0 or driven by a texture). Node groups are followed."""
+    tree, starts = _surface_starts(mat)
+    return tree is not None and _find(tree, starts, set(), _refracts)
 
 
 def is_glass(mat, settings):
     """Detected as glass and not marked Not Glass (the Glass Collection / matte_role work per object)."""
     return settings.detect_glass and not getattr(mat, "cryptoray_not_glass", False) and detect_glass(mat)
+
+
+def detect_chrome(mat):
+    """True when the surface shader has metal in it: a Glossy / Anisotropic / Metallic BSDF, or a
+    Principled BSDF with Metallic above 0 or driven by a texture, anywhere in the shader (mixes and
+    node groups included). Any roughness: the ID layer uses the same shader, so reflections blur alike."""
+    tree, starts = _surface_starts(mat)
+    return tree is not None and _find(tree, starts, set(), _metal)
+
+
+def is_chrome(mat, settings):
+    """Detected as chrome and not marked Not Chrome. Glass wins over chrome."""
+    return (settings.detect_chrome and not getattr(mat, "cryptoray_not_chrome", False)
+            and not is_glass(mat, settings) and detect_chrome(mat))
 
 
 # --------------------------------------------------------------------------
@@ -141,6 +185,359 @@ def _emission_material(name, color):
     o.location = (250, 0)
     nt.links.new(e.outputs[0], o.inputs["Surface"])
     return m
+
+
+# --------------------------------------------------------------------------
+# ID-layer copies of glass and chrome materials
+# --------------------------------------------------------------------------
+
+def _set_input(tree, node, key, value):
+    """Unlink the input and set its value (missing inputs are skipped)."""
+    s = node.inputs.get(key)
+    if s is None:
+        return
+    for l in list(s.links):
+        tree.links.remove(l)
+    s.default_value = value
+
+
+def _replace(tree, node, idname, carry=()):
+    """Put a new ``idname`` node where ``node`` was: same output links, the ``carry`` inputs copied."""
+    new = tree.nodes.new(idname)
+    new.location = node.location
+    for key in carry:
+        a, b = node.inputs.get(key), new.inputs.get(key)
+        if a is None or b is None:
+            continue
+        try:
+            b.default_value = a.default_value
+        except (AttributeError, TypeError, ValueError):
+            pass
+        for l in a.links:
+            tree.links.new(l.from_socket, b)
+    for l in list(node.outputs[0].links):
+        tree.links.new(new.outputs[0], l.to_socket)
+    tree.nodes.remove(node)
+    return new
+
+
+def _emission(tree, node, strength):
+    """Replace ``node`` with a white emission of ``strength`` (0 = black, no light)."""
+    e = _replace(tree, node, "ShaderNodeEmission")
+    e.inputs["Color"].default_value = (1, 1, 1, 1)
+    e.inputs["Strength"].default_value = strength
+    return e
+
+
+def _source(tree, node, key):
+    """(linked socket or None, value) of an input."""
+    s = node.inputs.get(key)
+    if s is None:
+        return None, None
+    return (s.links[0].from_socket if s.is_linked else None), s.default_value
+
+
+def _feed(tree, sock, src):
+    link, value = src
+    if link is not None:
+        tree.links.new(link, sock)
+    elif value is not None:
+        sock.default_value = value
+
+
+def _glossy_path(tree, cache):
+    """1 on rays that have bounced off something glossy (chrome seeing the glass), else 0."""
+    if tree not in cache:
+        lp = tree.nodes.new("ShaderNodeLightPath")
+        gt = tree.nodes.new("ShaderNodeMath")
+        gt.operation = "GREATER_THAN"
+        gt.inputs[1].default_value = 0.5
+        tree.links.new(lp.outputs["Glossy Depth"], gt.inputs[0])
+        lp.location, gt.location = (-900, 600), (-700, 600)
+        cache[tree] = gt.outputs[0]
+    return cache[tree]
+
+
+def _whiten(tree, src, glossy):
+    """``src`` (link, value) colour, white on glossy rays: glass tint never reaches chrome's reflection."""
+    mix = tree.nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    tree.links.new(glossy, mix.inputs[0])
+    a = next(i for i in mix.inputs if i.identifier == "A_Color")
+    b = next(i for i in mix.inputs if i.identifier == "B_Color")
+    _feed(tree, a, src)
+    b.default_value = (1, 1, 1, 1)
+    return next(o for o in mix.outputs if o.identifier == "Result_Color"), None
+
+
+_NODE_BASE = set(bpy.types.ShaderNode.bl_rna.properties.keys())
+
+
+def _split(tree, n, glossy):
+    """Keep ``n`` for camera/refraction rays and return a duplicate used on glossy rays only (the
+    caller strips the duplicate): Mix(n, duplicate) by the glossy-ray factor."""
+    dup = tree.nodes.new(n.bl_idname)
+    dup.location = (n.location.x, n.location.y - 900)
+    for p in n.bl_rna.properties:
+        if p.identifier not in _NODE_BASE and not p.is_readonly:
+            try:
+                setattr(dup, p.identifier, getattr(n, p.identifier))
+            except (AttributeError, TypeError, ValueError):
+                pass
+    for a, b in zip(n.inputs, dup.inputs):
+        try:
+            b.default_value = a.default_value
+        except (AttributeError, TypeError, ValueError):
+            pass
+        for l in a.links:
+            tree.links.new(l.from_socket, b)
+    mix = tree.nodes.new("ShaderNodeMixShader")
+    mix.location = (n.location.x + 250, n.location.y - 450)
+    for l in list(n.outputs[0].links):
+        tree.links.new(mix.outputs[0], l.to_socket)
+    tree.links.new(glossy, mix.inputs[0])
+    tree.links.new(n.outputs[0], mix.inputs[1])
+    tree.links.new(dup.outputs[0], mix.inputs[2])
+    return dup
+
+
+def _with_tir(tree, refr):
+    """Refraction BSDF -> Mix(refr, white Glossy) where real glass reflects everything: inside the glass,
+    past the critical angle (total internal reflection). A refraction-only shader kills those rays, so
+    thick glass (a bottle neck seen from above) would go black in the ID layer. This isn't a reflection
+    of the outside world, so the matte stays solid."""
+    outs = [l.to_socket for l in refr.outputs[0].links]
+    x, y = refr.location
+    fres = tree.nodes.new("ShaderNodeFresnel")        # for backfacing it uses 1/IOR: 1 past the critical angle
+    _feed(tree, fres.inputs["IOR"], _source(tree, refr, "IOR"))
+    _feed(tree, fres.inputs["Normal"], _source(tree, refr, "Normal"))
+    full = tree.nodes.new("ShaderNodeMath")
+    full.operation = "GREATER_THAN"
+    full.inputs[1].default_value = 0.999
+    tree.links.new(fres.outputs[0], full.inputs[0])
+    geo = tree.nodes.new("ShaderNodeNewGeometry")
+    inside = tree.nodes.new("ShaderNodeMath")
+    inside.operation = "MULTIPLY"
+    tree.links.new(full.outputs[0], inside.inputs[0])
+    tree.links.new(geo.outputs["Backfacing"], inside.inputs[1])
+    gl = tree.nodes.new("ShaderNodeBsdfGlossy")
+    gl.inputs["Color"].default_value = (1, 1, 1, 1)
+    _feed(tree, gl.inputs["Roughness"], _source(tree, refr, "Roughness"))
+    _feed(tree, gl.inputs["Normal"], _source(tree, refr, "Normal"))
+    mix = tree.nodes.new("ShaderNodeMixShader")
+    tree.links.new(inside.outputs[0], mix.inputs[0])
+    tree.links.new(refr.outputs[0], mix.inputs[1])
+    tree.links.new(gl.outputs[0], mix.inputs[2])
+    for i, node in enumerate((fres, full, geo, inside, gl)):
+        node.location = (x - 200, y - 200 - 150 * i)
+    mix.location = (x + 180, y)
+    for sock in outs:
+        tree.links.new(mix.outputs[0], sock)
+    return mix
+
+
+def _strip_principled(tree, n, glossy):
+    """Principled glass -> Mix(Principled without transmission or reflection, Refraction BSDF) by
+    Transmission Weight (then Alpha). A black Specular Tint alone isn't enough: it removes the outside
+    reflection, but light still reflects inside the glass (and Specular IOR Level 0 does nothing on
+    transmissive Principled in Blender 5.0)."""
+    trans_key = "Transmission Weight" if "Transmission Weight" in n.inputs else "Transmission"
+    trans = _source(tree, n, trans_key)
+    alpha = _source(tree, n, "Alpha")
+    outs = [l.to_socket for l in n.outputs[0].links]
+    refr = tree.nodes.new("ShaderNodeBsdfRefraction")
+    refr.location = (n.location.x, n.location.y - 600)
+    for a, b in (("Base Color", "Color"), ("Roughness", "Roughness"), ("IOR", "IOR"), ("Normal", "Normal")):
+        if b in refr.inputs:
+            src = _source(tree, n, a)
+            _feed(tree, refr.inputs[b], _whiten(tree, src, glossy) if b == "Color" else src)
+    _set_input(tree, n, trans_key, 0.0)
+    _set_input(tree, n, "Specular Tint", (0, 0, 0, 1))
+    _set_input(tree, n, "Coat Weight", 0.0)
+    _set_input(tree, n, "Sheen Weight", 0.0)
+    _set_input(tree, n, "Alpha", 1.0)
+    mix = tree.nodes.new("ShaderNodeMixShader")
+    mix.location = (n.location.x + 300, n.location.y)
+    _feed(tree, mix.inputs[0], trans)
+    tree.links.new(n.outputs[0], mix.inputs[1])
+    tree.links.new(refr.outputs[0], mix.inputs[2])
+    _with_tir(tree, refr)
+    last = mix
+    if alpha[0] is not None or (alpha[1] is not None and alpha[1] < 1.0):
+        cut = tree.nodes.new("ShaderNodeMixShader")
+        cut.location = (n.location.x + 500, n.location.y)
+        _feed(tree, cut.inputs[0], alpha)
+        tree.links.new(tree.nodes.new("ShaderNodeBsdfTransparent").outputs[0], cut.inputs[1])
+        tree.links.new(mix.outputs[0], cut.inputs[2])
+        last = cut
+    for s in outs:
+        tree.links.new(last.outputs[0], s)
+
+
+def _strip_glass(tree, keep, cache):
+    """No reflection, same refraction: transmissive Principled is split into its non-glass part and a
+    Refraction BSDF, Glass BSDF becomes a Refraction BSDF, reflective BSDFs go black. The refraction is
+    untinted on glossy rays. ``keep`` (Ignore Glass Reflections off): the real shader stays for camera and
+    refraction rays and the stripped one is used only on glossy rays, so chrome reflecting the glass sees
+    it the same way whatever the glass settings."""
+    glossy = _glossy_path(tree, cache)
+    for n in list(tree.nodes):
+        if n.bl_idname == "ShaderNodeBsdfPrincipled":
+            t = _split(tree, n, glossy) if keep else n
+            if _refracts(t):
+                _strip_principled(tree, t, glossy)
+            else:
+                _set_input(tree, t, "Specular Tint", (0, 0, 0, 1))
+                _set_input(tree, t, "Coat Weight", 0.0)
+                _set_input(tree, t, "Sheen Weight", 0.0)
+        elif n.bl_idname == "ShaderNodeBsdfGlass":
+            t = _split(tree, n, glossy) if keep else n
+            dist = t.distribution
+            col = _source(tree, t, "Color")
+            r = _replace(tree, t, "ShaderNodeBsdfRefraction", ("Roughness", "IOR", "Normal"))
+            _feed(tree, r.inputs["Color"], _whiten(tree, col, glossy))
+            try:
+                r.distribution = dist
+            except TypeError:
+                r.distribution = "GGX"
+            _with_tir(tree, r)
+        elif n.bl_idname in MIRROR_NODES:
+            _emission(tree, _split(tree, n, glossy) if keep else n, 0.0)
+
+
+def _chrome_tree(tree, own):
+    """Metal keeps reflecting. What doesn't reflect (Principled's non-metal part, Diffuse and other
+    matte BSDFs in a mix) emits the object's own ID when ``own``, else nothing. The material's own
+    emission is switched off. Metal colours go white: a gold or tinted metal reflects at full strength,
+    so its colour doesn't weaken the matte (with Ignore Glass Absorption off, coverage is raw light).
+    Returns True when something emits."""
+    white = (1, 1, 1, 1)
+    emits = False
+    for n in list(tree.nodes):
+        if n.bl_idname in MIRROR_NODES:
+            for key in ("Color", "Base Color", "Edge Tint"):
+                _set_input(tree, n, key, white)
+        if n.bl_idname == "ShaderNodeBsdfPrincipled":
+            _set_input(tree, n, "Base Color", white)
+            _set_input(tree, n, "Specular Tint", white)      # metal edge tint
+            _set_input(tree, n, "Emission Color", white)
+            strength = n.inputs.get("Emission Strength")
+            metal = n.inputs.get("Metallic")
+            _set_input(tree, n, "Emission Strength", 0.0)
+            if own and strength is not None and metal is not None:
+                if metal.is_linked:
+                    inv = tree.nodes.new("ShaderNodeMath")
+                    inv.operation = "SUBTRACT"
+                    inv.use_clamp = True
+                    inv.inputs[0].default_value = 1.0
+                    inv.location = (n.location.x - 200, n.location.y - 400)
+                    tree.links.new(metal.links[0].from_socket, inv.inputs[1])
+                    tree.links.new(inv.outputs[0], strength)
+                    emits = True
+                elif metal.default_value < 1.0:
+                    strength.default_value = 1.0 - max(0.0, metal.default_value)
+                    emits = True
+        elif n.bl_idname in MATTE_NODES:
+            _emission(tree, n, 1.0 if own else 0.0)
+            emits = emits or own
+        elif n.bl_idname in ("ShaderNodeEmission", "ShaderNodeBackground"):
+            _set_input(tree, n, "Strength", 0.0)
+    return emits
+
+
+def _id_copy(mat, kind):
+    """A tagged copy of ``mat`` for the ID layer (node groups it uses are copied too).
+    kind: 'glass', 'chrome' (own ID where not metal) or 'mirror'. Returns (copy, emits)."""
+    m = _tag(mat.copy())
+    m.name = "CR_%s_%s" % (kind, mat.name)
+    m[COPY_PROP] = mat.name_full
+    m[KIND_PROP] = kind
+    emits = False
+    if m.node_tree is not None:
+        groups, cache = {}, {}
+        trees = [m.node_tree]
+        while trees:
+            t = trees.pop()
+            for n in t.nodes:
+                if n.bl_idname == "ShaderNodeGroup" and n.node_tree is not None:
+                    g = groups.get(n.node_tree)
+                    if g is None:
+                        g = groups[n.node_tree] = _tag(n.node_tree.copy())
+                        trees.append(g)
+                    n.node_tree = g
+            if kind in ("glass", "glass_refl"):
+                _strip_glass(t, kind == "glass_refl", cache)
+            else:
+                emits = _chrome_tree(t, kind == "chrome") or emits
+    if kind in ("chrome", "mirror") and m.node_tree is not None:
+        # marks the pixels where the camera sees chrome (AOVs are written on camera rays only)
+        out = m.node_tree.nodes.new("ShaderNodeOutputAOV")
+        out.aov_name = core.CHROME_AOV
+        out.inputs["Value"].default_value = 1.0
+        out.location = (300, -400)
+    m["cryptoray_emits"] = emits
+    return m, emits
+
+
+def copy_sources():
+    """Names of the original materials that have ID-layer copies."""
+    return {m[COPY_PROP] for m in bpy.data.materials if is_ours(m) and COPY_PROP in m and m.users}
+
+
+def _copy_groups(mat):
+    """Our shader node-group copies used (directly or nested) by a material copy."""
+    found, trees = set(), [mat.node_tree] if mat.node_tree is not None else []
+    while trees:
+        for n in trees.pop().nodes:
+            g = getattr(n, "node_tree", None) if n.bl_idname == "ShaderNodeGroup" else None
+            if g is not None and is_ours(g) and g not in found:
+                found.add(g)
+                trees.append(g)
+    return found
+
+
+def refresh_copies(sources=None):
+    """Re-copy ID-layer materials from their originals (all, or those whose original's name is in
+    ``sources``), so material edits reach the ID layer. Runs shortly after a glass/chrome material
+    is edited, and when a CryptoRay render starts."""
+    for old in [m for m in bpy.data.materials if is_ours(m) and COPY_PROP in m]:
+        if sources is not None and old[COPY_PROP] not in sources:
+            continue
+        src = bpy.data.materials.get(old[COPY_PROP])
+        if src is None or old.users == 0:
+            continue
+        name = old.name
+        groups = _copy_groups(old)
+        new, _ = _id_copy(src, old[KIND_PROP])
+        old.user_remap(new)
+        bpy.data.materials.remove(old)
+        new.name = name
+        for g in groups:
+            if g.users == 0:
+                bpy.data.node_groups.remove(g)
+
+
+def _swap_group(swap):
+    """Geometry Nodes group that replaces every original glass/chrome material with its ID copy."""
+    g = _tag(bpy.data.node_groups.new("CR_material_swap", "GeometryNodeTree"))
+    g.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    g.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    n, l = g.nodes, g.links
+    gi, go = n.new("NodeGroupInput"), n.new("NodeGroupOutput")
+    # instances (Geometry Nodes, collection instances) are realized so their materials get swapped too
+    rl = n.new("GeometryNodeRealizeInstances")
+    l.new(gi.outputs[0], rl.inputs["Geometry"])
+    geo = rl.outputs[0]
+    for i, (orig, copy) in enumerate(sorted(swap.items(), key=lambda x: x[0].name_full)):
+        r = n.new("GeometryNodeReplaceMaterial")
+        r.inputs["Old"].default_value = orig
+        r.inputs["New"].default_value = copy
+        r.location = (200 * (i + 2), 0)
+        l.new(geo, r.inputs["Geometry"])
+        geo = r.outputs[0]
+    l.new(geo, go.inputs[0])
+    go.location = (200 * (len(swap) + 2), 0)
+    return g
 
 
 def _transparent_material():
@@ -244,18 +641,20 @@ def _set_inputs(mod, **values):
 # --------------------------------------------------------------------------
 
 def _glass_names(settings):
-    if settings.glass_collection is None:
-        return set()
-    return {o.name_full for o in settings.glass_collection.all_objects}
+    """{object name: 'glass' | 'chrome'} from the Glass and Chrome Collections (glass wins)."""
+    roles = {}
+    for coll, role in ((settings.chrome_collection, "chrome"), (settings.glass_collection, "glass")):
+        if coll is not None:
+            roles.update((o.name_full, role) for o in coll.all_objects)
+    return roles
 
 
 def _role(obj, glass_names):
+    """matte_role first, then the Glass / Chrome Collections."""
     role = str(obj.get("matte_role", "")).lower()
-    if role in ("glass", "ignore", "other"):
+    if role in ("glass", "chrome", "ignore", "other"):
         return role
-    if obj.name_full in glass_names:
-        return "glass"
-    return ""
+    return glass_names.get(obj.name_full, "")
 
 
 def root_objects(scene):
@@ -332,6 +731,19 @@ def _shows_emitter(obj):
     return obj.show_instancer_for_render
 
 
+def settings_problem(settings):
+    """Why the ID settings can't be built as they are (None when fine). Shown in the panel's IDs box."""
+    names = [n for _, n in requested_layers(settings)]
+    for n in names:
+        if not core.valid_layer_name(n):
+            return "Cryptomatte layer name %r: use letters, digits and _ only." % n
+    if len(set(names)) != len(names):
+        return "The Object and Material layers need different names."
+    if settings.scope == "COLLECTION" and settings.target_collection is None:
+        return "Choose the target collection (or set Targets to All)."
+    return None
+
+
 def analyse(context, scene, settings):
     """Returns dict with targets, glass, others, warnings. Raises BuildError for blockers."""
     src_layer = context.view_layer if context.view_layer and not is_ours(context.view_layer) else beauty_layers(scene)[0]
@@ -339,21 +751,14 @@ def analyse(context, scene, settings):
     if roots:
         raise BuildError("Objects directly in the Scene Collection can't be kept out of the ID layer: %s. "
                          "Use 'Move Root Objects' first." % ", ".join(o.name for o in roots[:6]))
-    if not settings.use_object and not settings.use_material:
-        raise BuildError("Tick Object and/or Material IDs.")
-    names = [n for _, n in requested_layers(settings)]
-    for n in names:
-        if not core.valid_layer_name(n):
-            raise BuildError("Cryptomatte layer name %r: use letters, digits and _ only." % n)
-    if len(set(names)) != len(names):
-        raise BuildError("The Object and Material layers need different names.")
+    problem = settings_problem(settings)
+    if problem:
+        raise BuildError(problem)
     glass_names = _glass_names(settings)
     scope = None
     if settings.scope == "COLLECTION":
-        if settings.target_collection is None:
-            raise BuildError("Choose the target collection (or set Targets to All).")
         scope = {o.name_full for o in settings.target_collection.all_objects}
-    targets, glass, others, warnings = [], [], [], []
+    targets, glass, chrome, others, warnings = [], [], [], [], []
     for obj, cam_visible in _visible_objects(src_layer):
         if obj.type not in RENDERABLE:
             if obj.type == "VOLUME":
@@ -369,14 +774,16 @@ def analyse(context, scene, settings):
         item = (obj, cam_visible)
         if role == "glass":
             glass.append(item)
+        elif role == "chrome":
+            chrome.append(item)
         elif role == "other" or (scope is not None and obj.name_full not in scope):
             others.append(item)
         else:
             targets.append(item)
     if not targets:
         raise BuildError("No target objects found in view layer '%s'." % src_layer.name)
-    return {"source_layer": src_layer, "targets": targets, "glass": glass, "others": others,
-            "warnings": warnings}
+    return {"source_layer": src_layer, "targets": targets, "glass": glass, "chrome": chrome,
+            "others": others, "warnings": warnings}
 
 
 # --------------------------------------------------------------------------
@@ -438,12 +845,14 @@ def clear(scene):
     for c in [c for c in bpy.data.collections if is_ours(c)]:
         bpy.data.collections.remove(c)
         removed += 1
-    # shared datablocks: only when nothing uses them any more (another built scene might)
-    for store in (bpy.data.particles, bpy.data.node_groups, bpy.data.materials, bpy.data.worlds):
-        for idb in list(store):
-            if is_ours(idb) and idb.users == 0:
-                store.remove(idb)
-                removed += 1
+    # shared datablocks: only when nothing uses them any more (another built scene might). Twice:
+    # material copies use copied shader groups, and the swap group uses the material copies.
+    for _ in range(2):
+        for store in (bpy.data.particles, bpy.data.node_groups, bpy.data.materials, bpy.data.worlds):
+            for idb in list(store):
+                if is_ours(idb) and idb.users == 0:
+                    store.remove(idb)
+                    removed += 1
     return removed
 
 
@@ -460,6 +869,9 @@ class _Builder:
         self.warnings = []
         self.entries = {}          # (object name, material name) -> group
         self.glass_cache = {}
+        self.chrome_cache = {}
+        self.swap = {}             # original glass/chrome material -> its ID-layer copy
+        self.keep_proxies = []     # proxies that keep their materials (swapped by CR_material_swap)
         self.other = False
         self.n = 0
 
@@ -468,7 +880,44 @@ class _Builder:
         g = self.glass_cache.get(mat)
         if g is None:
             g = self.glass_cache[mat] = is_glass(mat, self.s)
+            if g:
+                self.glass_copy(mat)
         return g
+
+    def chrome(self, mat):
+        c = self.chrome_cache.get(mat)
+        if c is None:
+            c = self.chrome_cache[mat] = not self.glass(mat) and is_chrome(mat, self.s)
+            if c:
+                self.chrome_copy(mat)
+        return c
+
+    def glass_copy(self, mat):
+        """The ID layer uses a copy of the glass without its reflection (with Ignore Glass Reflections off,
+        only where chrome reflects the glass)."""
+        if mat is not None and mat not in self.swap:
+            self.swap[mat], _ = _id_copy(mat, "glass" if self.s.ignore_reflections else "glass_refl")
+
+    def chrome_copy(self, mat):
+        if mat is not None and mat not in self.swap:
+            self.swap[mat], _ = _id_copy(
+                mat, "mirror" if self.s.pure_chrome else "chrome")
+
+    def how(self, mat):
+        """'keep' (glass), 'chrome' (real shader, reflects IDs) or 'emit' (gets an ID)."""
+        return "keep" if self.glass(mat) else "chrome" if self.chrome(mat) else "emit"
+
+    def material(self, how):
+        """Override material for a proxy part (None: keep the material, swapped for its ID copy)."""
+        return self.white if how == "emit" else None
+
+    def lightgroup(self, obj_name, mat, how):
+        """Emitting parts get the ID's group. Chrome does too unless Treat as Pure Chrome: its non-metal parts
+        emit the object's own ID (a group even when nothing emits yet: material edits are picked up at
+        render time, see refresh_copies)."""
+        if how == "emit" or (how == "chrome" and not self.s.pure_chrome):
+            return self.group(obj_name, mat)
+        return ""
 
     def group(self, obj_name, mat):
         """Light group for an (object, material) pair under the current ID settings."""
@@ -484,28 +933,41 @@ class _Builder:
         return g
 
     def parts(self, obj, mats):
-        """How to build ``obj``: [(material or None, 'emit'|'keep')], None = the whole object."""
-        glass = {m for m in mats if self.glass(m)}
-        solid = sorted(set(mats) - glass, key=lambda m: m.name_full)
+        """How to build ``obj``: [(material or None, 'emit'|'keep'|'chrome')], None = the whole object.
+        Chrome parts always name their material: its own-ID light group depends on it."""
+        if not mats:
+            return [(None, "emit")]
+        hows = {m: self.how(m) for m in mats}
+        solid = sorted((m for m in mats if hows[m] == "emit"), key=lambda m: m.name_full)
+        special = sorted((m for m in mats if hows[m] != "emit"), key=lambda m: m.name_full)
         if not solid:
-            return [(None, "keep")] if mats else [(None, "emit")]
-        if not glass and (len(solid) == 1 or not self.s.use_material):
+            if all(hows[m] == "keep" for m in special):
+                return [(None, "keep")]
+            return [(m, hows[m]) for m in special]
+        if not special and (len(solid) == 1 or not self.s.use_material):
             return [(solid[0] if len(solid) == 1 else None, "emit")]
-        return [(m, "emit") for m in solid] + [(m, "keep") for m in sorted(glass, key=lambda m: m.name_full)]
+        return [(m, "emit") for m in solid] + [(m, hows[m]) for m in special]
 
-    def proxy(self, obj, part, collection, label):
+    def proxy(self, obj, part, collection, label, other=False):
         mat, how = part
         p = _proxy(obj, label, collection)
+        emit = self.material(how)
         if mat is None:
-            grp = _node_group("emit" if how == "emit" else "keep")
-            inputs = {"Source": obj, "Emit": self.white} if how == "emit" else {"Source": obj}
+            grp = _node_group("emit" if emit else "keep")
+            inputs = {"Source": obj, "Emit": emit} if emit else {"Source": obj}
         else:
-            grp = _node_group("matsel" if how == "emit" else "keepsel")
+            grp = _node_group("matsel" if emit else "keepsel")
             inputs = {"Source": obj, "Only": mat}
-            if how == "emit":
-                inputs["Emit"] = self.white
+            if emit:
+                inputs["Emit"] = emit
         _attach(p, grp, **inputs)
-        p.lightgroup = self.group(obj.name_full, mat) if how == "emit" else ""
+        if emit is None:
+            self.keep_proxies.append(p)
+        if other:      # no ID: light that would carry one counts towards the total only
+            glows = how == "emit" or (how == "chrome" and not self.s.pure_chrome)
+            p.lightgroup = core.OTHER_GROUP if glows else ""
+        else:
+            p.lightgroup = self.lightgroup(obj.name_full, mat, how)
         self.n += 1
         return p
 
@@ -532,10 +994,29 @@ class _Builder:
                 c.data.materials.append(None)
             for slot in c.material_slots:
                 slot.link = "OBJECT"
-                slot.material = self.white if how == "emit" else self.clear_mat
-        c.lightgroup = self.group(obj.name_full, mat) if how == "emit" else ""
+                slot.material = self.material(how) or self.clear_mat
+        elif how in ("keep", "chrome"):
+            self.swap_slots(c)
+        c.lightgroup = self.lightgroup(obj.name_full, mat, how)
         self.n += 1
         return c
+
+    def swap_slots(self, c):
+        """Object-level slot overrides: original glass/chrome materials -> their ID copies."""
+        for slot in c.material_slots:
+            m = slot.material
+            if m is not None and m in self.swap:
+                slot.link = "OBJECT"
+                slot.material = self.swap[m]
+
+    def finish(self):
+        """Swap materials on the proxies that keep theirs."""
+        if not self.swap or not self.keep_proxies:
+            return
+        g = _swap_group(self.swap)
+        for p in self.keep_proxies:
+            m = p.modifiers.new("CryptoRay swap", "NODES")
+            m.node_group = g
 
     # ---- objects ----
     def target(self, obj, cam):
@@ -549,16 +1030,58 @@ class _Builder:
             self.particles(obj, cam, index, ps)
 
     def other_object(self, obj, cam):
+        """No ID. matte_role = "other": a plain blocker. Outside the Target Collection: glass still
+        refracts and chrome still reflects (their parts are built as usual); the rest blocks."""
+        self.other = True
+        if _role(obj, self.glass_names) != "other":
+            for part in self.parts(obj, self._mats(obj)):
+                if part[1] == "emit":
+                    continue
+                label = "CR_other_%s|%s" % (obj.name, part[0].name if part[0] is not None else "")
+                p = self.proxy(obj, part, self.coll, label, other=True)
+                p.visible_camera = p.visible_camera and cam
+            emits = [part for part in self.parts(obj, self._mats(obj)) if part[1] == "emit"]
+            if not emits:
+                return
+            if emits != [(None, "emit")]:
+                for mat, _ in emits:
+                    p = _proxy(obj, "CR_other_%s|%s" % (obj.name, mat.name), self.coll)
+                    _attach(p, _node_group("matsel"), Source=obj, Only=mat, Emit=self.white)
+                    p.visible_camera = p.visible_camera and cam
+                    p.lightgroup = core.OTHER_GROUP
+                return
         p = _proxy(obj, "CR_other_%s" % obj.name, self.coll)
         _attach(p, _node_group("emit"), Source=obj, Emit=self.white)
         p.visible_camera = p.visible_camera and cam
         p.lightgroup = core.OTHER_GROUP
-        self.other = True
+
+    def _mats(self, obj):
+        return sorted(_object_materials(self.depsgraph, obj), key=lambda m: m.name_full)
 
     def glass_object(self, obj, cam):
+        """matte_role = "glass" / Glass Collection: every material refracts as it is."""
+        for m in self._mats(obj):
+            self.glass_copy(m)
         p = _proxy(obj, "CR_glass_%s" % obj.name, self.coll)
         _attach(p, _node_group("keep"), Source=obj)
+        self.keep_proxies.append(p)
         p.visible_camera = p.visible_camera and cam
+
+    def chrome_parts(self, obj):
+        """matte_role = "chrome": every material reflects, detected as chrome or not."""
+        mats = self._mats(obj)
+        for m in mats:
+            self.chrome_copy(m)
+        return [(m, "chrome") for m in mats]
+
+    def chrome_object(self, obj, cam):
+        parts = self.chrome_parts(obj)
+        if not parts:
+            self.warnings.append("'%s' has no material to reflect with: it gets its own ID." % obj.name)
+            return self.target(obj, cam)
+        for part in parts:
+            p = self.proxy(obj, part, self.coll, "CR_chrome_%s|%s" % (obj.name, part[0].name))
+            p.visible_camera = p.visible_camera and cam
 
     # ---- legacy particles ----
     def _emitter_copy(self, obj, cam, index, label):
@@ -590,11 +1113,12 @@ class _Builder:
             if not obj.material_slots:
                 self.warnings.append("Hair strands on '%s' need a material slot to get an ID." % obj.name)
                 return
+            how = "chrome" if mat is not None and self.chrome(mat) else "emit"
             c, st = self._emitter_copy(obj, cam, index, base)
             for slot in c.material_slots:      # object-level override on the copy only
                 slot.link = "OBJECT"
-                slot.material = self.white
-            c.lightgroup = self.group(obj.name_full, mat)
+                slot.material = self.swap[mat] if how == "chrome" else self.white
+            c.lightgroup = self.lightgroup(obj.name_full, mat, how)
             self.n += 1
             return
         if st0.render_type == "OBJECT":
@@ -607,7 +1131,11 @@ class _Builder:
             if role == "ignore":
                 plans[o] = []
             elif role == "glass":
+                for m in self._mats(o):
+                    self.glass_copy(m)
                 plans[o] = [(None, "keep")]
+            elif role == "chrome":
+                plans[o] = self.chrome_parts(o) or [(None, "emit")]
             else:
                 plans[o] = self.parts(o, sorted(_object_materials(self.depsgraph, o), key=lambda m: m.name_full))
         # one variant when nothing needs splitting, else one per material (+ whole objects)
@@ -661,7 +1189,7 @@ def build(context, scene, settings):
         lc = other.layer_collection.children.get(coll.name)
         if lc is not None:
             lc.exclude = True
-    vl.use = True
+    vl.use = bool(requested_layers(settings))    # no IDs ticked: built, but nothing to render
     vl.samples = settings.matte_samples
     vl.cycles.use_denoising = False
     vl.use_pass_combined = True
@@ -673,6 +1201,8 @@ def build(context, scene, settings):
     vl.lightgroups.add(name=core.WORLD_GROUP)
     world.lightgroup = core.WORLD_GROUP
     vl.lightgroups.add(name=core.OTHER_GROUP)
+    aov = vl.aovs.add()
+    aov.name, aov.type = core.CHROME_AOV, "VALUE"
 
     b = _Builder(scene, settings, depsgraph, vl, coll, sources)
     for obj, cam in info["targets"]:
@@ -681,23 +1211,24 @@ def build(context, scene, settings):
         b.other_object(obj, cam)
     for obj, cam in info["glass"]:
         b.glass_object(obj, cam)
+    for obj, cam in info["chrome"]:
+        b.chrome_object(obj, cam)
 
-    # Ignore Glass Reflections: nothing in the ID layer is visible to glossy (reflection) rays, so a
-    # reflection on glass adds no light; refracted (transmission) rays still see everything
-    world.cycles_visibility.glossy = not settings.ignore_reflections
+    b.finish()
+    # Reflections (on chrome, and on glass unless its copy has none) see the proxies and the world.
+    # Nothing is visible to diffuse rays: light bouncing off the non-metal part of a chrome material
+    # would otherwise carry the IDs of its neighbours.
+    world.cycles_visibility.glossy = True
+    world.cycles_visibility.diffuse = False
+    for o in list(coll.objects) + list(sources.all_objects):
+        if is_ours(o):
+            o.visible_diffuse = False
     lost = []
-    if settings.ignore_reflections:
-        for o in list(coll.objects) + list(sources.all_objects):
-            if is_ours(o):
-                o.visible_glossy = False
-        _reflection_catcher(coll, b.white)
-        vl.lightgroups.add(name=core.LOST_GROUP)
-        lost = [core.LOST_GROUP]
 
     entries = [{"group": g, "object": k[0], "material": k[1]} for k, g in sorted(b.entries.items(), key=lambda x: x[1])]
-    if not entries:
+    if not entries and requested_layers(settings):   # no IDs ticked: an empty build is fine
         clear(scene)
-        raise BuildError("Nothing gets an ID (everything is glass, or has no material in Material-only mode).")
+        raise BuildError("Nothing gets an ID (everything is glass or chrome, or has no material in Material-only mode).")
     layers = requested_layers(settings)
     for kind, _ in layers:
         try:
@@ -711,6 +1242,7 @@ def build(context, scene, settings):
     man["settings"] = settings_signature(settings)
     man["sources"] = _sources(info)
     man["glass_materials"] = sorted(m.name_full for m, g in b.glass_cache.items() if g)
+    man["chrome_materials"] = sorted(m.name_full for m, c in b.chrome_cache.items() if c)
     man["glass_check"] = _slot_glass(scene, settings)
     vl[MANIFEST_PROP] = json.dumps(man)
     warnings = list(info["warnings"]) + b.warnings
@@ -720,45 +1252,29 @@ def build(context, scene, settings):
                         "(use the Collection target to limit IDs)." % groups)
     counts = {kind: len(core.layer_names(man, kind)) for kind, _ in layers}
     return {"ids": counts, "groups": groups, "proxies": b.n, "glass": len(info["glass"]),
-            "glass_materials": man["glass_materials"], "others": len(info["others"]), "warnings": warnings}
-
-
-def _reflection_catcher(coll, white):
-    """A huge sphere seen only by reflection rays: with everything else invisible to them, it measures
-    how much of each pixel's light comes from reflections on glass (light group LOST_GROUP)."""
-    import bmesh
-    me = _tag(bpy.data.meshes.new("CR_reflection_catcher"))
-    bm = bmesh.new()
-    bmesh.ops.create_icosphere(bm, subdivisions=3, radius=10000.0)
-    bm.to_mesh(me)
-    bm.free()
-    me.materials.append(white)
-    o = _tag(bpy.data.objects.new("CR_reflection_catcher", me))
-    coll.objects.link(o)
-    for f in VIS_FLAGS:
-        if hasattr(o, f):
-            setattr(o, f, f == "visible_glossy")
-    o.lightgroup = core.LOST_GROUP
-    o.hide_select = True
-    return o
+            "glass_materials": man["glass_materials"], "chrome": len(info["chrome"]),
+            "chrome_materials": man["chrome_materials"], "others": len(info["others"]), "warnings": warnings}
 
 
 def _sources(info):
-    return sorted({o.name_full for o, _ in info["targets"] + info["glass"] + info["others"]})
+    return sorted({o.name_full for o, _ in info["targets"] + info["glass"] + info["chrome"] + info["others"]})
 
 
 def _slot_glass(scene, settings):
-    """Glass materials in the scene's object slots (cheap staleness check for Not Glass edits)."""
+    """Glass and chrome materials in the scene's object slots (cheap staleness check for Not Glass /
+    Not Chrome edits)."""
     mats = {sl.material for o in scene.objects for sl in o.material_slots
             if sl.material is not None and not is_ours(sl.material)}
-    return sorted(m.name_full for m in mats if is_glass(m, settings))
+    return (sorted(m.name_full for m in mats if is_glass(m, settings))
+            + sorted("chrome:" + m.name_full for m in mats if is_chrome(m, settings)))
 
 
 def settings_signature(s):
     return [bool(s.use_object), bool(s.use_material), [n for _, n in requested_layers(s)], s.scope,
             s.target_collection.name_full if s.target_collection else "",
             s.glass_collection.name_full if s.glass_collection else "", bool(s.detect_glass),
-            bool(s.ignore_reflections)]
+            bool(s.ignore_reflections), bool(s.detect_chrome), bool(s.pure_chrome),
+            s.chrome_collection.name_full if s.chrome_collection else ""]
 
 
 def stale_reason(context, scene, settings):
@@ -775,7 +1291,7 @@ def stale_reason(context, scene, settings):
     if _sources(info) != man.get("sources"):
         return "objects changed"
     if _slot_glass(scene, settings) != man.get("glass_check"):
-        return "glass materials changed"
+        return "glass or chrome materials changed"
     vl = id_layer(scene)
     leaks = [lc.name for lc in vl.layer_collection.children if not lc.exclude and lc.name != PROXY_COLLECTION]
     if leaks:

@@ -13,6 +13,15 @@ STRINGS = {
     "Cryptomatte Proxy Scene and View Layer": ("Cryptomatte 代理场景与视图层", "Cryptomatte 代理場景與視圖層"),
     "Build": ("构建", "建立"),
     "Rebuild": ("重新构建", "重新建立"),
+    "Auto Update": ("自动更新", "自動更新"),
+    "Rebuilding...": ("正在重新构建…", "正在重新建立…"),
+    "Fix the setting marked below, then Build.": ("请先修正下方标出的设置，再构建。", "請先修正下方標出的設定，再建立。"),
+    "No IDs ticked: renders write no Cryptomatte": ("未勾选任何 ID：渲染不会写入 Cryptomatte",
+                                                    "未勾選任何 ID：渲染不會寫入 Cryptomatte"),
+    "Rebuild the proxy scene by itself when a setting below or a material checkbox changes. Turn off for "
+    "heavy scenes and press Rebuild when ready":
+        ("当下方设置或材质勾选框改变时自动重新构建代理场景。场景较重时可关闭，准备好后再按“重新构建”",
+         "當下方設定或材質勾選框改變時自動重新建立代理場景。場景較重時可關閉，準備好後再按「重新建立」"),
     "Delete": ("删除", "刪除"),
     "Objects sit directly in the Scene Collection": ("有物体直接位于场景集合中", "有物件直接位於場景集合中"),
     "Built: %d IDs, %d light groups": ("已构建：%d 个 ID，%d 个灯光组", "已建立：%d 個 ID，%d 個燈光群組"),
@@ -26,6 +35,8 @@ STRINGS = {
     "IDs": ("ID", "ID"),
     "Glass": ("玻璃", "玻璃"),
     "No glass materials found": ("未找到玻璃材质", "未找到玻璃材質"),
+    "Chrome": ("镜面金属", "鏡面金屬"),
+    "No chrome materials found": ("未找到镜面金属材质", "未找到鏡面金屬材質"),
     "Output": ("输出", "輸出"),
     "Render Cryptomatte Only": ("仅渲染 Cryptomatte", "僅渲染 Cryptomatte"),
     "Render Still": ("渲染静帧", "渲染靜態影格"),
@@ -35,7 +46,7 @@ STRINGS = {
     "not built": ("未构建", "未建立"),
     "settings changed": ("设置已更改", "設定已變更"),
     "objects changed": ("物体已更改", "物件已變更"),
-    "glass materials changed": ("玻璃材质已更改", "玻璃材質已變更"),
+    "glass or chrome materials changed": ("玻璃或镜面金属材质已更改", "玻璃或鏡面金屬材質已變更"),
 
     # ---- properties ----
     "Object": ("物体", "物件"),
@@ -60,27 +71,51 @@ STRINGS = {
     "Target Collection": ("目标集合", "目標集合"),
     "Detect Glass Materials": ("自动检测玻璃材质", "自動偵測玻璃材質"),
     "Materials that refract (Glass or Refraction BSDF, Principled with Transmission) keep their real shader in "
-    "the ID layer. Untick Not Glass per material below":
-        ("会折射的材质（玻璃或折射 BSDF、带透射的原理化 BSDF）在 ID 层中保留真实着色器。可在下方逐个勾选“非玻璃”",
-         "會折射的材質（玻璃或折射 BSDF、帶透射的原理化 BSDF）在 ID 圖層中保留真實著色器。可在下方逐一勾選「非玻璃」"),
+    "the ID layer. Untick a material below to give it its own ID":
+        ("会折射的材质（玻璃或折射 BSDF、带透射的原理化 BSDF）在 ID 层中保留真实着色器。在下方取消勾选某个材质即可让它获得自己的 ID",
+         "會折射的材質（玻璃或折射 BSDF、帶透射的原理化 BSDF）在 ID 圖層中保留真實著色器。在下方取消勾選某個材質即可讓它獲得自己的 ID"),
     "Glass Collection": ("玻璃集合", "玻璃集合"),
     "Optional: whole objects in here keep their real materials in the ID layer. Objects can also be tagged with "
     "the custom property matte_role = \"glass\"":
         ("可选：此集合中的整个物体在 ID 层中保留真实材质。也可以给物体添加自定义属性 matte_role = \"glass\"",
          "可選：此集合中的整個物件在 ID 圖層中保留真實材質。也可以為物件加入自訂屬性 matte_role = \"glass\""),
+    "Detect Chrome Materials": ("自动检测镜面金属材质", "自動偵測鏡面金屬材質"),
+    "Metals (Glossy, Anisotropic or Metallic BSDF, Principled with Metallic, also in mixes and with textures) "
+    "keep their shader in the ID layer: what they reflect keeps its own ID, blurred like the reflection. "
+    "Untick a material below to give it its own ID":
+        ("金属（Glossy、Anisotropic 或 Metallic BSDF，带金属度的 Principled，也包括混合着色器与纹理）在 ID 层中保留其着色器："
+         "其反射的物体保留各自的 ID，并像反射一样模糊。在下方取消勾选某个材质即可让它获得自己的 ID",
+         "金屬（Glossy、Anisotropic 或 Metallic BSDF，帶金屬度的 Principled，也包括混合著色器與紋理）在 ID 圖層中保留其著色器："
+         "其反射的物件保留各自的 ID，並像反射一樣模糊。在下方取消勾選某個材質即可讓它獲得自己的 ID"),
+    "Chrome Collection": ("镜面金属集合", "鏡面金屬集合"),
+    "Optional: every material of the objects in here reflects IDs like chrome, detected or not. Objects can "
+    "also be tagged with the custom property matte_role = \"chrome\"":
+        ("可选：此集合中物体的所有材质都像镜面金属一样反射 ID，无论是否被检测到。也可以给物体添加自定义属性 matte_role = \"chrome\"",
+         "可選：此集合中物件的所有材質都像鏡面金屬一樣反射 ID，無論是否被偵測到。也可以為物件加入自訂屬性 matte_role = \"chrome\""),
+    "Treat as Pure Chrome": ("视为纯镜面金属", "視為純鏡面金屬"),
+    "Chrome shows only what it reflects, never its own ID. Off: where chrome isn't fully metal (Metallic below "
+    "1, rust in a texture, diffuse in a mix) the object's own ID shows, in proportion":
+        ("镜面金属只显示其反射的内容，从不显示自身的 ID。关闭：镜面金属不完全是金属的地方（金属度低于 1、纹理中的锈迹、混合中的漫射）"
+         "按比例显示物体自身的 ID",
+         "鏡面金屬只顯示其反射的內容，從不顯示自身的 ID。關閉：鏡面金屬不完全是金屬的地方（金屬度低於 1、紋理中的鏽跡、混合中的漫射）"
+         "按比例顯示物件自身的 ID"),
     "Ignore Glass Reflections": ("忽略玻璃反射", "忽略玻璃反射"),
-    "Reflections on glass carry no IDs, so objects seen through glass (clear or tinted) get a solid matte. Off: "
-    "reflected objects also show up in the glass, as partial coverage":
-        ("玻璃上的反射不带 ID，因此透过玻璃（透明或有色）看到的物体得到完整的遮罩。关闭：反射的物体也会以部分覆盖率出现在玻璃中",
-         "玻璃上的反射不帶 ID，因此透過玻璃（透明或有色）看到的物件得到完整的遮罩。關閉：反射的物件也會以部分覆蓋率出現在玻璃中"),
+    "Reflections on glass carry no IDs (the ID layer uses a copy of each glass material without its "
+    "reflection), so objects seen through glass (clear or tinted) get a solid matte. Off: reflected objects "
+    "also show up in the glass, as partial coverage. Chrome isn't affected: glass reflected in chrome always "
+    "looks the same":
+        ("玻璃上的反射不带 ID（ID 层使用每个玻璃材质去除反射后的副本），因此透过玻璃（透明或有色）看到的物体得到完整的遮罩。"
+         "关闭：反射的物体也会以部分覆盖率出现在玻璃中。不影响镜面金属：镜面金属中反射的玻璃始终保持一致",
+         "玻璃上的反射不帶 ID（ID 圖層使用每個玻璃材質去除反射後的副本），因此透過玻璃（透明或有色）看到的物件得到完整的遮罩。"
+         "關閉：反射的物件也會以部分覆蓋率出現在玻璃中。不影響鏡面金屬：鏡面金屬中反射的玻璃始終保持一致"),
     "Ignore Glass Absorption": ("忽略玻璃吸收", "忽略玻璃吸收"),
     "Coverage is each ID's share of the light in the pixel, so glass absorption and tint (light lost inside the "
     "glass) don't weaken the matte. Off: coverage is the light that actually reaches the camera, darker through "
-    "tinted glass, and needn't add up to 1":
+    "tinted glass, and needn't add up to 1. Chrome isn't affected":
         ("覆盖率是每个 ID 在该像素光线中所占的比例，因此玻璃的吸收与染色（在玻璃中损失的光）不会削弱遮罩。"
-         "关闭：覆盖率为实际到达摄像机的光，透过有色玻璃会更暗，总和不一定为 1",
+         "关闭：覆盖率为实际到达摄像机的光，透过有色玻璃会更暗，总和不一定为 1。不影响镜面金属",
          "覆蓋率是每個 ID 在該像素光線中所佔的比例，因此玻璃的吸收與染色（在玻璃中損失的光）不會削弱遮罩。"
-         "關閉：覆蓋率為實際到達攝影機的光，透過有色玻璃會更暗，總和不一定為 1"),
+         "關閉：覆蓋率為實際到達攝影機的光，透過有色玻璃會更暗，總和不一定為 1。不影響鏡面金屬"),
     "Embed in Beauty EXR": ("嵌入 Beauty EXR", "嵌入 Beauty EXR"),
     "Write the Cryptomatte layers into the beauty EXR. Off: a separate <render name>_crypto_<frame>.exr next to "
     "it. IDs Only renders always write a separate file":
@@ -99,6 +134,18 @@ STRINGS = {
                                                                       "所需燈光群組超過此數時發出警告（顯示記憶體）"),
     "Not Glass": ("非玻璃", "非玻璃"),
     "Give this material an ID even though its shader refracts": ("即使此材质会折射，也给它一个 ID", "即使此材質會折射，也給它一個 ID"),
+    "Detected glass materials": ("检测到的玻璃材质", "偵測到的玻璃材質"),
+    "Detected chrome materials": ("检测到的镜面金属材质", "偵測到的鏡面金屬材質"),
+    "Use as Glass": ("作为玻璃", "作為玻璃"),
+    "Treat this material as glass. Off: it gets its own ID":
+        ("将此材质视为玻璃。关闭：它获得自己的 ID", "將此材質視為玻璃。關閉：它獲得自己的 ID"),
+    "Use as Chrome": ("作为镜面金属", "作為鏡面金屬"),
+    "Treat this material as chrome: it shows the IDs it reflects. Off: it gets its own ID":
+        ("将此材质视为镜面金属：显示其反射的 ID。关闭：它获得自己的 ID",
+         "將此材質視為鏡面金屬：顯示其反射的 ID。關閉：它獲得自己的 ID"),
+    "Not Chrome": ("非镜面金属", "非鏡面金屬"),
+    "Give this material an ID instead of showing the IDs it reflects": ("给此材质一个 ID，而不显示其反射物体的 ID",
+                                                                        "給此材質一個 ID，而不顯示其反射物件的 ID"),
 
     # ---- operators ----
     "Build Proxy Scene": ("构建代理场景", "建立代理場景"),
@@ -140,8 +187,9 @@ STRINGS = {
                                                               "請選擇目標集合（或將目標設為「所有可見物件」）。"),
     "This Blender version has no per-view-layer world override (needs Blender 4.2+).":
         ("此 Blender 版本不支持按视图层覆盖世界环境（需要 Blender 4.2+）。", "此 Blender 版本不支援按視圖層覆寫世界環境（需要 Blender 4.2+）。"),
-    "Nothing gets an ID (everything is glass, or has no material in Material-only mode).":
-        ("没有任何物体获得 ID（全部是玻璃，或在仅材质模式下没有材质）。", "沒有任何物件獲得 ID（全部是玻璃，或在僅材質模式下沒有材質）。"),
+    "Nothing gets an ID (everything is glass or chrome, or has no material in Material-only mode).":
+        ("没有任何物体获得 ID（全部是玻璃或镜面金属，或在仅材质模式下没有材质）。",
+         "沒有任何物件獲得 ID（全部是玻璃或鏡面金屬，或在僅材質模式下沒有材質）。"),
 }
 
 # Blender looks strings up by (context, msgid). Labels and properties use the default context,
