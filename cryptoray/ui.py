@@ -57,6 +57,32 @@ def _material_box(layout, mats, title, empty, prop, icon="MATERIAL"):
         r.label(text=m.name, translate=False, icon=icon)
 
 
+def _toggle_section(layout, s, toggle, icon):
+    """A box whose header checkbox switches the whole section on/off. Returns the indented body
+    column, greyed out and locked while the toggle is off (the settings keep their values)."""
+    box = layout.box()
+    head = box.row()
+    head.use_property_split = False
+    head.prop(s, toggle, text="")
+    head.label(text=s.bl_rna.properties[toggle].name, icon=icon)
+    row = box.row()
+    row.separator(factor=1.5)              # indent the body under the header checkbox
+    col = row.column()
+    col.use_property_split = False         # checkboxes left-aligned so long labels aren't cut off
+    col.enabled = getattr(s, toggle)
+    return col
+
+
+def _collection_row(layout, s, toggle, prop):
+    """[x] Collection [field]: the checkbox ignores the collection without clearing it."""
+    row = layout.row(align=False)
+    row.prop(s, toggle, text="")
+    split = row.split(factor=0.38)          # room for the whole word: the default split cuts it off
+    split.active = getattr(s, toggle)
+    split.label(text="Collection")
+    split.prop(s, prop, text="")
+
+
 class CRYPTORAY_PT_main(bpy.types.Panel):
     bl_label = "CryptoRay"
     bl_idname = "CRYPTORAY_PT_main"
@@ -144,34 +170,26 @@ class CRYPTORAY_PT_main(bpy.types.Panel):
             box.label(text="No IDs ticked: renders write no Cryptomatte", icon="INFO")
 
         # ---- Glass ----
-        box = body.box()
-        box.label(text="Glass", icon="MATERIAL")
-        row = box.row()
-        row.use_property_split = False
-        row.prop(s, "detect_glass")
+        col = _toggle_section(body, s, "use_glass", "MATERIAL")
+        col.prop(s, "detect_glass")
         if s.detect_glass:
-            _material_box(box, [m for m in _scene_materials(scene) if build.detect_glass(m)],
+            _material_box(col, [m for m in _scene_materials(scene) if build.detect_glass(m)],
                           "Detected glass materials", "No glass materials found", "cryptoray_use_glass")
-        box.prop(s, "glass_collection")
-        col = box.column()
-        col.use_property_split = False      # checkboxes left-aligned so long labels aren't cut off
+        _collection_row(col, s, "use_glass_collection", "glass_collection")
+        col.separator(type="LINE")
         col.prop(s, "ignore_reflections")
         col.prop(s, "ignore_absorption")
 
         # ---- Chrome ----
-        box = body.box()
-        box.label(text="Chrome", icon="SHADING_RENDERED")
-        row = box.row()
-        row.use_property_split = False
-        row.prop(s, "detect_chrome")
+        col = _toggle_section(body, s, "use_chrome", "SHADING_RENDERED")
+        col.prop(s, "detect_chrome")
         if s.detect_chrome:
-            _material_box(box, [m for m in _scene_materials(scene)
+            _material_box(col, [m for m in _scene_materials(scene)
                                 if build.detect_chrome(m) and not build.is_glass(m, s)],
                           "Detected chrome materials", "No chrome materials found", "cryptoray_use_chrome",
                           icon="SHADING_RENDERED")
-        box.prop(s, "chrome_collection")
-        col = box.column()
-        col.use_property_split = False
+        _collection_row(col, s, "use_chrome_collection", "chrome_collection")
+        col.separator(type="LINE")
         col.prop(s, "pure_chrome")
 
         # ---- Output ----

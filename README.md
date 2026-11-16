@@ -94,12 +94,14 @@ When you're done, click **Delete**. It removes everything CryptoRay added. Rende
 
 <img src="docs/images/ui_glass.png" width="300" alt="Glass section">
 
+* **Glass** (on by default): off, glass gets its own ID like any other object.
 * **Detect Glass Materials:** finds glass by its material. Any material that refracts (Glass BSDF,
   Refraction BSDF, or Principled BSDF with Transmission) is listed here. Glass keeps its real shader so it
   bends the mattes, and gets no ID itself. An object with both glass and other materials (a bottle with a
   paper label) is split: the label gets an ID, the glass refracts.
 * **Detected glass materials:** ticked by default. Untick one to treat it as a normal surface with its own ID.
-* **Glass Collection:** optional. Whole objects in this collection are treated as glass.
+* **Collection:** optional. Whole objects in this collection are treated as glass. Untick the checkbox in
+  front of it to ignore the collection without clearing it.
 * **Ignore Glass Reflections** (on by default): reflections on glass don't carry IDs, so whatever is behind
   the glass gets a solid matte. Turn it off and reflected objects show up in the glass too, mixed into the
   matte.
@@ -135,14 +137,16 @@ yellow.*
 
 <img src="docs/images/ui_chrome.png" width="300" alt="Chrome section">
 
+* **Chrome** (off by default): tick it to see IDs reflected in chrome.
 * **Detect Chrome Materials** (on by default): finds metal by its material: a Glossy, Anisotropic or
   Metallic BSDF, or a Principled BSDF with Metallic above 0 or driven by a texture, also inside mixed shaders
   and node groups. Whatever chrome reflects keeps its own ID, just like objects seen through glass. The ID
   layer uses the chrome's own shader, so rough metal blurs the reflected IDs the same way it blurs the
   reflection in the beauty.
 * **Detected chrome materials:** ticked by default. Untick one to give that material its own, solid ID instead.
-* **Chrome Collection:** optional. Every material of the objects in this collection reflects IDs like
-  chrome, detected or not (Glass Collection wins if an object is in both).
+* **Collection:** optional. Every material of the objects in this collection reflects IDs like
+  chrome, detected or not (the glass collection wins if an object is in both). Untick the checkbox in front
+  of it to ignore the collection without clearing it.
 * **Treat as Pure Chrome** (on by default): chrome shows only what it reflects, as if the material were pure
   chrome, even where it isn't fully metal (Metallic below 1, rust in a texture, diffuse in a mix). Turn it off
   and the object's own ID shows there, in proportion: rusty metal shows reflections where it's metal and its
@@ -160,6 +164,7 @@ yellow.*
 
 Per object, you can also add the custom property `matte_role`: `"glass"` (treat as glass), `"chrome"`
 (treat as chrome), `"ignore"` (leave it out completely) or `"other"` (hides what's behind it but gets no ID).
+`"glass"` and `"chrome"` only work while the Glass or Chrome checkbox is ticked.
 
 <img src="docs/images/ui_matte_role.png" width="374" alt="Custom property matte_role set to glass">
 

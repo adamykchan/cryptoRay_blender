@@ -149,7 +149,8 @@ def detect_glass(mat):
 
 def is_glass(mat, settings):
     """Detected as glass and not marked Not Glass (the Glass Collection / matte_role work per object)."""
-    return settings.detect_glass and not getattr(mat, "cryptoray_not_glass", False) and detect_glass(mat)
+    return (settings.use_glass and settings.detect_glass and not getattr(mat, "cryptoray_not_glass", False)
+            and detect_glass(mat))
 
 
 def detect_chrome(mat):
@@ -162,7 +163,7 @@ def detect_chrome(mat):
 
 def is_chrome(mat, settings):
     """Detected as chrome and not marked Not Chrome. Glass wins over chrome."""
-    return (settings.detect_chrome and not getattr(mat, "cryptoray_not_chrome", False)
+    return (settings.use_chrome and settings.detect_chrome and not getattr(mat, "cryptoray_not_chrome", False)
             and not is_glass(mat, settings) and detect_chrome(mat))
 
 
@@ -640,18 +641,30 @@ def _set_inputs(mod, **values):
 # Scene analysis
 # --------------------------------------------------------------------------
 
+class _Roles(dict):
+    """{object name: 'glass' | 'chrome'} plus ``off``: the roles switched off (Glass / Chrome unticked)."""
+    off = frozenset()
+
+
 def _glass_names(settings):
-    """{object name: 'glass' | 'chrome'} from the Glass and Chrome Collections (glass wins)."""
-    roles = {}
-    for coll, role in ((settings.chrome_collection, "chrome"), (settings.glass_collection, "glass")):
-        if coll is not None:
+    """{object name: 'glass' | 'chrome'} from the Glass and Chrome Collections (glass wins).
+    Glass / Chrome switched off, or their collection toggle off, leaves that collection out."""
+    roles = _Roles()
+    roles.off = frozenset(r for r, on in (("glass", settings.use_glass), ("chrome", settings.use_chrome))
+                          if not on)
+    for coll, role, on in ((settings.chrome_collection, "chrome", settings.use_chrome_collection),
+                           (settings.glass_collection, "glass", settings.use_glass_collection)):
+        if coll is not None and on and role not in roles.off:
             roles.update((o.name_full, role) for o in coll.all_objects)
     return roles
 
 
 def _role(obj, glass_names):
-    """matte_role first, then the Glass / Chrome Collections."""
+    """matte_role first, then the Glass / Chrome Collections. A matte_role of a switched-off
+    role (Glass / Chrome unticked) counts as no role: the object gets its own ID."""
     role = str(obj.get("matte_role", "")).lower()
+    if role in getattr(glass_names, "off", ()):
+        return ""
     if role in ("glass", "chrome", "ignore", "other"):
         return role
     return glass_names.get(obj.name_full, "")
@@ -1274,7 +1287,8 @@ def settings_signature(s):
             s.target_collection.name_full if s.target_collection else "",
             s.glass_collection.name_full if s.glass_collection else "", bool(s.detect_glass),
             bool(s.ignore_reflections), bool(s.detect_chrome), bool(s.pure_chrome),
-            s.chrome_collection.name_full if s.chrome_collection else ""]
+            s.chrome_collection.name_full if s.chrome_collection else "",
+            bool(s.use_glass), bool(s.use_chrome), bool(s.use_glass_collection), bool(s.use_chrome_collection)]
 
 
 def stale_reason(context, scene, settings):

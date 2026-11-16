@@ -50,6 +50,20 @@ class CryptoRaySettings(bpy.types.PropertyGroup):
                                             "objects still occlude correctly")],
         default="ALL")
     target_collection: PointerProperty(update=_rebuild, name="Target Collection", type=bpy.types.Collection)
+    use_glass: BoolProperty(update=_rebuild,
+        name="Glass", default=True,
+        description="See IDs through glass. Off: glass is treated like any other surface and gets its own "
+                    "ID (the glass settings below keep their values but have no effect)")
+    use_chrome: BoolProperty(update=_rebuild,
+        name="Chrome", default=False,
+        description="See IDs reflected in chrome. Off: chrome is treated like any other surface and gets its "
+                    "own ID (the chrome settings below keep their values but have no effect)")
+    use_glass_collection: BoolProperty(update=_rebuild,
+        name="Use Glass Collection", default=True,
+        description="Use the Glass Collection. Off: it is ignored but stays set")
+    use_chrome_collection: BoolProperty(update=_rebuild,
+        name="Use Chrome Collection", default=True,
+        description="Use the Chrome Collection. Off: it is ignored but stays set")
     detect_glass: BoolProperty(update=_rebuild,
         name="Detect Glass Materials", default=True,
         description="Materials that refract (Glass or Refraction BSDF, Principled with Transmission) keep "
