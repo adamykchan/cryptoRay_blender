@@ -69,6 +69,20 @@ STRINGS = {
     "Only objects in the chosen collection get IDs; other visible objects still occlude correctly":
         ("只有所选集合中的物体获得 ID；其他可见物体仍会正确遮挡", "只有所選集合中的物件獲得 ID；其他可見物件仍會正確遮擋"),
     "Target Collection": ("目标集合", "目標集合"),
+    "See IDs through glass. Off: glass is treated like any other surface and gets its own ID (the glass "
+    "settings below keep their values but have no effect)":
+        ("透过玻璃看到 ID。关闭：玻璃与其他表面一样处理，获得自己的 ID（下方的玻璃设置保留其值，但不起作用）",
+         "透過玻璃看到 ID。關閉：玻璃與其他表面一樣處理，獲得自己的 ID（下方的玻璃設定保留其值，但不起作用）"),
+    "See IDs reflected in chrome. Off: chrome is treated like any other surface and gets its own ID (the "
+    "chrome settings below keep their values but have no effect)":
+        ("看到镜面金属中反射的 ID。关闭：镜面金属与其他表面一样处理，获得自己的 ID（下方的镜面金属设置保留其值，但不起作用）",
+         "看到鏡面金屬中反射的 ID。關閉：鏡面金屬與其他表面一樣處理，獲得自己的 ID（下方的鏡面金屬設定保留其值，但不起作用）"),
+    "Use Glass Collection": ("使用玻璃集合", "使用玻璃集合"),
+    "Use the Glass Collection. Off: it is ignored but stays set":
+        ("使用玻璃集合。关闭：忽略该集合，但保留所选集合", "使用玻璃集合。關閉：忽略該集合，但保留所選集合"),
+    "Use Chrome Collection": ("使用镜面金属集合", "使用鏡面金屬集合"),
+    "Use the Chrome Collection. Off: it is ignored but stays set":
+        ("使用镜面金属集合。关闭：忽略该集合，但保留所选集合", "使用鏡面金屬集合。關閉：忽略該集合，但保留所選集合"),
     "Detect Glass Materials": ("自动检测玻璃材质", "自動偵測玻璃材質"),
     "Materials that refract (Glass or Refraction BSDF, Principled with Transmission) keep their real shader in "
     "the ID layer. Untick a material below to give it its own ID":

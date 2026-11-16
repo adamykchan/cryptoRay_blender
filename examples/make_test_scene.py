@@ -253,6 +253,8 @@ def main():
     ps.settings.render_type, ps.settings.instance_object = "OBJECT", cone
     ps.settings.particle_size = 0.5
     # glass and chrome are found by material; no Glass collection or matte_role needed
+    if hasattr(sc, "cryptoray"):      # Chrome is off by default; this scene shows it
+        sc.cryptoray.use_chrome = True
     sc.frame_set(1)
     return sc
 
