@@ -77,9 +77,10 @@ def _collection_row(layout, s, toggle, prop):
     """[x] Collection [field]: the checkbox ignores the collection without clearing it."""
     row = layout.row(align=False)
     row.prop(s, toggle, text="")
-    sub = row.row()
-    sub.active = getattr(s, toggle)
-    sub.prop(s, prop, text="Collection")
+    split = row.split(factor=0.38)          # room for the whole word: the default split cuts it off
+    split.active = getattr(s, toggle)
+    split.label(text="Collection")
+    split.prop(s, prop, text="")
 
 
 class CRYPTORAY_PT_main(bpy.types.Panel):
